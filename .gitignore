@@ -1,0 +1,14 @@
+# 构建中间产物（CI 里不需要，本地跑才产生）
+out/
+turnip_workdir/
+.ccache/
+*.log
+
+# 编辑器/系统杂项
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python 编译缓存（本地 py_compile 校验产生）
+__pycache__/
+*.pyc

@@ -1,0 +1,1 @@
+Eden 专用调校：texfast（mip 取最近，真正省纹理带宽）+ BGRA 实色交换 + LRZ rescue，LOD 收到 +0.30；不锁 TU_DEBUG，显存模式交给 Eden 菜单现场切

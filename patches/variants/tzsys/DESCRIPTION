@@ -1,0 +1,1 @@
+对照：TU_DEBUG=sysmem 强制系统内存渲染，同时解锁 LRZ rescue
