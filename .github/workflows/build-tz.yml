@@ -74,6 +74,46 @@ jobs:
           set -o pipefail
           bash ./turnip_builder.sh 2>&1 | tee build-tz.log
 
+      # 关键防线：没有真正编出 .so 就必须失败，不能"绿着交付空包"。
+      # 同时把日志尾部写进 Summary，便于远程定位（无需下载 artifact）。
+      - name: Verify build outputs
+        if: always()
+        run: |
+          {
+            echo "### 输出目录 out/"
+            echo '```'
+            ls -la out/ 2>/dev/null || echo "(out/ 不存在)"
+            echo '```'
+            echo
+            echo "### 日志尾部（最后 120 行）"
+            echo '```'
+            tail -n 120 build-tz.log 2>/dev/null || echo "(无 build-tz.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          shopt -s nullglob
+          zips=(out/*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "::error::没有产出任何驱动 zip，编译未完成"
+            exit 1
+          fi
+
+          fail=0
+          for z in "${zips[@]}"; do
+            bytes=$(stat -c%s "$z")
+            so=$(unzip -l "$z" 2>/dev/null | awk '$NF ~ /\.so$/ {print $1; exit}')
+            echo "检查 $z：zip=${bytes} bytes，内含 .so=${so:-无}"
+            if [ -z "${so:-}" ]; then
+              echo "::error::$z 里没有 .so"
+              fail=1
+            elif [ "$so" -lt 1000000 ]; then
+              echo "::error::$z 的 .so 只有 $so bytes（<1 MiB），不是有效驱动"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "全部 ${#zips[@]} 个包校验通过"
+
       - name: Summary (每个补丁是 applied 还是 no-change)
         if: always()
         run: |
