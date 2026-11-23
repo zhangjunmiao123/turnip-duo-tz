@@ -6,7 +6,24 @@
 
 ---
 
-## v6.3：克隆 v5.1 上游仓库逐文件比对后的结论
+## v6.4：v6.3 的结论也错了——`.off` 停用才是真正根因
+
+v6.3 的 `base` 实测仍比 v5.1 慢。这次拿到了决定性证据：把用户手上的 `Turnip-Duo-v5.1.zip` 解开，对两个 `.so` 做内嵌字符串对比——
+
+- **v5.1 的 .so 里有整套 `TU_Z_*` 环境变量字符串**（`TU_Z_SYSMEM_ONLY`、`TU_Z_TEXFAST`、`TU_Z_MUTABLE`、`TU_Z_BGRA_SWAP`、`TU_Z_LRZ_RESCUE`、`TU_Z_LODBIAS`、`TU_KGSL_IB_CACHE`、`TU_LRZ_REUSE_DONT_CARE` 等）；
+- **我们 v6.3 的 .so 一个都没有**。
+
+这些字符串是 30–37 号 Turnip-Z 补丁编译进去的调试选项名。它们缺席说明 **v6.3 构建时这批补丁根本没生效**。查 `patches-base.txt`：只 applied 了 10 个补丁。再对 `patches/` 目录逐文件核对启用状态，真相是：
+
+**本仓库 fork 自上游 v7.x（"Clean Upstream"时代），那个时代的补丁全被上游改名成 `.off` 停用了。** 而 v5.1（tag `5.1`）是同一仓库更早的提交，全套启用。之前 v6.3 说的"启用集完全一致"验证是错的——只对了文件存在性，没看 `.off` 后缀。
+
+v6.4 的做法：**直接下载上游 `5.1` tag 的源码包，把 `patches/` 整个原样覆盖进仓库**（连 01/15/16/17/30/36/56/57 这些"共有"补丁的内容也换成 5.1 版本——它们与 v7.x 时代的内容也不同），并用 `diff -r` 校验逐字节一致。我们自有的 25/58 号停用（v5.1 没有），全部旧变体归档。构建脚本 `turnip_builder.sh` 本来就与 5.1 一致，Mesa commit 同为 74920caa，NDK 同为 r29。
+
+**v6.4 的 `base` 现在才真正等于 v5.1。** 验证方法（构建完成后）：打开 `patches-base.txt`，应该有 **30 个左右 applied**，且必须包含 `20-default-env.py`、`30-tu-z-mutable.py`、`32-tu-z-texfast.py`、`33-tu-z-bgra-swap.py`、`36-tu-z-sysmem-only.py`、`50-fd720-blob.py`。
+
+---
+
+## v6.3 的结论（部分错误，留作记录）
 
 v6.2 的 `tz5` 实测**仍然**比 v5.1 慢。这次不再猜，直接把上游仓库 `sherft2607/turnip-adreno722-duo` clone 下来逐文件比对，结果把之前的两个判断全部推翻：
 
@@ -14,14 +31,11 @@ v6.2 的 `tz5` 实测**仍然**比 v5.1 慢。这次不再猜，直接把上游�
 
 **二、17 号的 p2 回退是 v5.1 帧率的组成部分，不是事故。** 上游 17 号源码就是 `BUILD_VARIANT` 不认识时回退 `p2`——v5.1 的每一个构建都走了 governor 关闭 + 强制 turbo。v6.0/v6.1/v6.2 把它改成 no-op，等于把 GPU 频率控制交回系统。
 
-v6.3 的做法：**base 逐字节恢复成上游 v5.1 原样**（17/57 号回退上游原文、36 号重新启用、删除我加的 18 号），然后只留一个实验变体：
+v6.3 的做法（**事后看只做对了一半**：17/57 号内容确实回退了上游原文，但大量补丁仍处于 `.off` 停用状态，`.so` 里一个 `TU_Z_*` 字符串都没有，见 v6.4 一节）：
 
-- **`base`（主力）**：v5.1 的精确等效，预期帧率与 v5.1 完全一致（同补丁、同构建脚本、同 Mesa commit 74920caa）。
-- **`tz6f`（实验）**：`base` + texfast 省带宽档（`TU_Z_TEXMIP=1` + `TU_Z_LODBIAS=45`），v5.1 之上唯一的增量。
+- ~~`tz6f`（实验）~~：已随 v6.4 归档到 `variants-archive/v63-tz6f/`。
 
-v6.0–v6.2 的全部变体移入 `variants-archive/` 留档，不再构建。
-
-**测试判据**：`base` ≈ v5.1 → 构建链无问题，之后任何增量都在 `tz6f` 上做、逐项可归因；`tz6f` > `base` → texfast 有净收益，转正。
+**测试判据**：`base` ≈ v5.1 → 构建链无问题，之后任何增量都从这个零起点重新开始、逐项可归因。
 
 ---
 
@@ -149,7 +163,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 ## 第 2 步：跑第一次构建（先只出 1 个包）
 
-**这里有个关键建议：第一次只编 `base` 和 `tz6f` 两个。**
+**这里有个关键建议：第一次只编 `base` 一个。**
 
 理由：4 个变体是**各自从干净源码树完整编译一遍**（构建脚本每个变体都 `git reset --hard` + `clean -fdx`），首次还要额外下载 1.5GB 的 NDK。4 个一起跑容易撞 120 分钟超时；先单个跑通链路，确认补丁、打包、产物都对，再批量。单个首次约 **30–40 分钟**。
 
@@ -162,8 +176,8 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 | 参数 | 填什么 | 说明 |
 |---|---|---|
-| `version` | `6.3` | 只影响 zip 名，别填中文 |
-| `variants` | **`base tz6f`** | ← 第一次就填这两个 |
+| `version` | `6.4` | 只影响 zip 名，别填中文 |
+| `variants` | **`base`** | ← 第一次只填这一个 |
 | `mesa_ref` | **保持默认不动** | `74920caa...913b`，动了补丁锚点可能全部失效 |
 | `cpu_flags` | `-march=armv8.2-a` | 保持默认。这是唯一零画质风险的改动，别清空 |
 
@@ -174,7 +188,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 点进正在跑的那次运行，展开 `Build` 步骤的日志。**正常**的日志会长这样：
 
 ```
-==== Building v6.3-base ====
+==== Building v6.4-base ====
 [56-fd722-blob.py] applied ...
 [57-fd722-duo.py] applied ...
 ```
@@ -202,13 +216,13 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 2. 下载到的是一个 zip，**先解压这一次**，里面是：
 
 ```
-Turnip-Duo-TZ-v6.3-base.zip     ← 这个才是驱动包
+Turnip-Duo-TZ-v6.4-base.zip     ← 这个才是驱动包
 patches-base.txt                ← 补丁日志（和 Summary 里一样）
 build-info.env                    ← Mesa 提交号、版本
 build-tz.log                      ← 完整编译日志
 ```
 
-3. **`Turnip-Duo-TZ-v6.3-base.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
+3. **`Turnip-Duo-TZ-v6.4-base.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
 
 ---
 
@@ -220,8 +234,8 @@ build-tz.log                      ← 完整编译日志
 
 1. 打开 **Eden**
 2. **设置 → 图形（Graphics）→ GPU 驱动（GPU driver）**
-3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.3-base.zip`
-4. 列表里应该出现一项 **`Turnip Duo TZ v6.3-base`**
+3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.4-base.zip`
+4. 列表里应该出现一项 **`Turnip Duo TZ v6.4-base`**
 5. 选中它（选中即生效，会提示重启模拟器/游戏）
 
 **不需要 root，不动系统驱动。** 想回退就在同一个界面切回"系统驱动"，或删掉这一项。
@@ -232,7 +246,7 @@ build-tz.log                      ← 完整编译日志
 
 ### 方式 A：看 Eden 里的驱动名（最快）
 
-设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.3-base`。这是"选中了"，但不代表"加载成功"。
+设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.4-base`。这是"选中了"，但不代表"加载成功"。
 
 ### 方式 B：看 logcat（最可靠）
 
@@ -282,7 +296,7 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722"
 
 这是现在信息量最大的一组实验，但**有一条硬约束，先看这一条**：
 
-> ⚠️ **v6.3 的 `base` 与 v5.1 一样：36 号把 autotune 默认钉在 `PREFER_SYSMEM`，sysmem 是预期主路径。** 不需要也不建议手动设 `TU_DEBUG=gmem` 或 `TU_DEBUG=sysmem`——前者会把所有 pass 无条件塞进 1 MiB GMEM，后者是重复操作。想临时走 GMEM 路径做实验，另编 `tzvauzi`（在 `variants-archive/` 里）。
+> ⚠️ **v6.4 的 `base` 与 v5.1 完全一样：36 号把 autotune 默认钉在 `PREFER_SYSMEM`，sysmem 是预期主路径；31/32/33/37 号 Turnip-Z 补丁全部生效。** 不需要也不建议手动设 `TU_DEBUG=gmem` 或 `TU_DEBUG=sysmem`——前者会把所有 pass 无条件塞进 1 MiB GMEM，后者是重复操作。想临时走 GMEM 路径做实验，另编 `tzvauzi`（在 `variants-archive/` 里）。
 
 社区口径本身也**互相矛盾**：Vauzi-17（710/720/722 驱动的作者）推荐 `sysmem` 作默认，而 MrPurple 在 Eden 的 PR 里说 A710/720 必须 `gmem` 才正常。两者对应的却不是同一套几何参数——这大概就是矛盾的原因。A722 没人公开测过。
 
@@ -301,18 +315,13 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 | 与 v5.1 基本一致（±5%） | ✅ 构建链没有问题，v6.0–v6.2 的减速全部来自变体补丁。以后所有优化都从 `base` 出发、逐项可归因 |
 | 明显更慢 | 构建参数还有差异（NDK 版本、cpu_flags），把 `build-info.env` 和 `build-tz.log` 回传给我 |
 
-**第二步：`tz6f`（base + texfast）** —— 装上，同样设置再测：
+**没有第二步了——v6.4 只出 `base` 一个包，它就是 v5.1。** 如果实测与 v5.1 一致，日常就用它；后续任何优化都从这个零起点重新开始、逐项可归因，不再像 v6.0–v6.3 那样一次带一堆假设。
 
-| 结果 | 含义 |
-|---|---|
-| 比 `base` 快 | texfast 省带宽有净收益，转正当日常包 |
-| 比 `base` 慢或持平 | `TU_Z_LODBIAS` 收到 20 再试；仍不行就 texfast 不适合这款游戏 |
+> v5.1 本身的 texfast（`TU_Z_TEXFAST`）等变量都是编译进驱动的，默认值与 v5.1 发布包一致，不需要在 Eden 里另设。
 
-`tz6f` 的纹理偏置可以在 Eden 驱动设置里现场改（不用重编）：`TU_Z_TEXMIP=0` 恢复三线性、`TU_Z_LODBIAS=20` 收小偏置。锯齿本来就不管了，画质不用测。
+### 8.3 如果 `base` 还比 v5.1 慢
 
-### 8.3 如果 `base` 都比 v5.1 慢
-
-那就不是补丁的问题，而是构建参数差异。v5.1 上游 README 写的是 NDK r29 + SDK 36，与我们一致；剩下可对比的只有 `cpu_flags`（我们默认 `-march=armv8.2-a`，上游 CI 没传）。对策：workflow 里把 `cpu_flags` **清空**重跑一次，其余不动。
+那就不是补丁的问题，而是构建环境差异。补丁、构建脚本、Mesa commit、NDK r29 四样都已确认与 v5.1 一致，剩下唯一可调的是 `cpu_flags`（我们默认为空；注释里提到的 `-march=armv8.2-a` 需要显式传参才会生效）。如果真到了这一步，把 `build-info.env` 和 `build-tz.log` 回传，我逐行比对编译配置。
 
 ### 8.4 每轮怎么测
 
@@ -333,8 +342,8 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 
 **先别急着编。** 等 8.2 出结论再说：
 
-- `base` ≈ v5.1 且 `tz6f` 比 `base` 快 → 日常就用 `tz6f`，结束。
-- 想再验其它思路（GMEM 几何、外部寄存器表）→ v6.0–v6.2 的变体都在 `variants-archive/` 里，要用哪个把它移回 `patches/variants/` 再编，**一次只移一个**；装法同第 5 步，测完删掉再装下一个，否则你分不清是哪个在起作用。
+- `base` ≈ v5.1 → 日常就用它，结束。
+- 想再验其它思路（GMEM 几何、外部寄存器表、texfast 加强档）→ 旧变体都在 `variants-archive/` 里，要用哪个把它移回 `patches/variants/` 再编，**一次只移一个**；装法同第 5 步，测完删掉再装下一个，否则你分不清是哪个在起作用。
 
 ---
 

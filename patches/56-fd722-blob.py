@@ -1,35 +1,34 @@
 #!/usr/bin/env python3
-"""FD722: register tuning and hardware properties for Adreno 722 from Qualcomm blob analysis (chip_id 0x43020100).
+"""FD722: penyesuaian nilai register dan properti hardware Adreno 722 dari analisis blob Qualcomm (chip_id 0x43020100).
 
-Corrections based on analysis of 116 .rd cmdstream traces and KGSL kernel IOCTLs:
-1. Define dedicated a722_raw_magic_regs to replace erroneous aliasing to a730_raw_magic_regs.
-   Corrects 12 register deviations:
-   - REG_A6XX_TPL1_DBG_ECO_CNTL = 0x03000000 (previously 0x01000000 from A730)
-   - REG_A6XX_TPL1_DBG_ECO_CNTL1 = 0x00000700 (previously 0x00040724 from A730)
-   - REG_A6XX_SP_CHICKEN_BITS = 0x00000400 (previously 0x00001400 from A730)
-   - REG_A7XX_SP_CHICKEN_BITS_1 = 0x01400400 (previously 0x00402400 from A730)
-   - REG_A7XX_SP_CHICKEN_BITS_2 = 0x00000010 (unique A722 feature bit, previously 0x00000000)
-   - REG_A6XX_SP_DBG_ECO_CNTL = 0x11000000 (previously 0x10000000 from A730)
-   - REG_A7XX_SP_HLSQ_DBG_ECO_CNTL = 0x00000000 (previously 0x00008000 from A730)
-   - REG_A6XX_PC_DBG_ECO_CNTL = 0x20100000 (previously 0x20080000 from A730)
-   - REG_A7XX_PC_UNKNOWN_9E24 = 0x01fc7f00 (previously 0x21fc7f00 from A730)
-   - REG_A7XX_RB_CCU_DBG_ECO_CNTL = 0x00080000 (previously 0x02080000 from A730)
-   - REG_A6XX_UCHE_CACHE_WAYS = 0x00040004 (previously 0x00840004 from A730)
-   - REG_A7XX_UCHE_UNKNOWN_0E11 = 0x00000000 (previously 0x00000040 from A730)
-2. Set highest_bank_bit = 15 per KGSL properties (previously unset / None).
-3. Set has_lpac = False and enable_tp_ubwc_flag_hint = False via GPUProps (so
-   tu_cmd_buffer.cc does not OR 0x40000 back into REG_A6XX_TPL1_DBG_ECO_CNTL1).
+Perbaikan berdasarkan analisis 116 trace cmdstream .rd dan IOCTL kernel KGSL:
+1. Mendefinisikan a722_raw_magic_regs mandiri untuk menggantikan aliasing keliru ke a730_raw_magic_regs.
+   Mengoreksi 12 register deviasi:
+   - REG_A6XX_TPL1_DBG_ECO_CNTL = 0x03000000 (sebelumnya 0x01000000 dari A730)
+   - REG_A6XX_TPL1_DBG_ECO_CNTL1 = 0x00000700 (sebelumnya 0x00040724 dari A730)
+   - REG_A6XX_SP_CHICKEN_BITS = 0x00000400 (sebelumnya 0x00001400 dari A730)
+   - REG_A7XX_SP_CHICKEN_BITS_1 = 0x01400400 (sebelumnya 0x00402400 dari A730)
+   - REG_A7XX_SP_CHICKEN_BITS_2 = 0x00000010 (fitur unik A722, sebelumnya 0x00000000)
+   - REG_A6XX_SP_DBG_ECO_CNTL = 0x11000000 (sebelumnya 0x10000000 dari A730)
+   - REG_A7XX_SP_HLSQ_DBG_ECO_CNTL = 0x00000000 (sebelumnya 0x00008000 dari A730)
+   - REG_A6XX_PC_DBG_ECO_CNTL = 0x20100000 (sebelumnya 0x20080000 dari A730)
+   - REG_A7XX_PC_UNKNOWN_9E24 = 0x01fc7f00 (sebelumnya 0x21fc7f00 dari A730)
+   - REG_A7XX_RB_CCU_DBG_ECO_CNTL = 0x00080000 (sebelumnya 0x02080000 dari A730)
+   - REG_A6XX_UCHE_CACHE_WAYS = 0x00040004 (sebelumnya 0x00840004 dari A730)
+   - REG_A7XX_UCHE_UNKNOWN_0E11 = 0x00000000 (sebelumnya 0x00000040 dari A730)
+2. Menyetel highest_bank_bit = 15 sesuai properti KGSL (sebelumnya tidak disetel / None).
+3. Menyetel has_lpac = False via GPUProps (hardware LPAC dinonaktifkan di silikon A722).
 
-Run from the Mesa source root. Idempotent and safe to rerun.
+Dijalankan dari root direktori Mesa. Idempoten dan aman dijalankan berulang kali.
 """
 import sys
 
 NAME = "56-fd722-blob.py"
-SUMMARY = "FD722: a722_raw_magic_regs (TPL1 0x03000000/0x700, SP chicken 0x400/0x01400400/0x10, eco regs), highest_bank_bit=15, has_lpac=False, enable_tp_ubwc_flag_hint=False"
+SUMMARY = "FD722: a722_raw_magic_regs (TPL1 0x03000000/0x700, SP chicken 0x400/0x01400400/0x10, eco regs), highest_bank_bit=15, has_lpac=False"
 
 DEVICES = "src/freedreno/common/freedreno_devices.py"
 
-MAGIC_BLOCK_OCT = """a722_raw_magic_regs = [
+MAGIC_BLOCK = """a722_raw_magic_regs = [
         [A6XXRegs.REG_A6XX_UCHE_CACHE_WAYS, 0x00040004],
         [A6XXRegs.REG_A6XX_TPL1_DBG_ECO_CNTL, 0x03000000],
         [A6XXRegs.REG_A6XX_TPL1_DBG_ECO_CNTL1, 0x00000700],
@@ -79,16 +78,12 @@ MAGIC_BLOCK_OCT = """a722_raw_magic_regs = [
 
 """
 
-MAGIC_BLOCK_AUG = MAGIC_BLOCK_OCT.replace(
-    "        [A6XXRegs.REG_A6XX_RB_DBG_ECO_CNTL,   0x00000000],\n", ""
-)
-
-NEW_A722_BLOCK_OCT = """add_gpus([
+NEW_A722_BLOCK = """add_gpus([
         GPUId(chip_id=0x43020100, name="Adreno (TM) 722"),
         GPUId(chip_id=0xffff43020100, name="Adreno (TM) 722"),
     ], A6xxGPUInfo(
         CHIP.A7XX,
-        [a7xx_base, a7xx_gen1, GPUProps(has_lpac = False, enable_tp_ubwc_flag_hint = False)],
+        [a7xx_base, a7xx_gen1, GPUProps(has_lpac = False)],
         num_ccu = 1,
         tile_align_w = 64,
         tile_align_h = 16,
@@ -102,16 +97,12 @@ NEW_A722_BLOCK_OCT = """add_gpus([
         raw_magic_regs = a722_raw_magic_regs,
     ))"""
 
-NEW_A722_BLOCK_AUG = NEW_A722_BLOCK_OCT.replace(
-    "        raw_magic_regs = a722_raw_magic_regs,\n",
-    "        magic_regs = a730_magic_regs,\n        raw_magic_regs = a722_raw_magic_regs,\n",
-)
-
 
 def apply_devices(s):
     if "a722_raw_magic_regs" in s and "raw_magic_regs = a722_raw_magic_regs" in s:
         return s, None
 
+    # Hapus a722_raw_magic_regs jika sempat terinjeksi parsial
     if "a722_raw_magic_regs = [\n" in s:
         m_start = s.find("a722_raw_magic_regs = [\n")
         m_end = s.find("]\n\n", m_start)
@@ -128,11 +119,8 @@ def apply_devices(s):
         return None, "Could not delineate Adreno 722 add_gpus block in freedreno_devices.py"
     end += 6  # include '    ))'
 
-    uses_magic_regs_dict = "magic_regs = a730_magic_regs," in s[start:end]
-    if uses_magic_regs_dict:
-        replacement = MAGIC_BLOCK_AUG + NEW_A722_BLOCK_AUG
-    else:
-        replacement = MAGIC_BLOCK_OCT + NEW_A722_BLOCK_OCT
+    # Ganti blok A722 lama dengan a722_raw_magic_regs + NEW_A722_BLOCK
+    replacement = MAGIC_BLOCK + NEW_A722_BLOCK
     s = s[:start] + replacement + s[end:]
     return s, None
 

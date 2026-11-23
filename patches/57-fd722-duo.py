@@ -4,8 +4,8 @@
 The Duo's 60 FPS docked result comes from upstream's own FD722 values, so this
 script changes nothing today - it locks them in:
 
-  num_ccu          1    rewritten (device value; T30's 2/32 only suits GMEM)
-  tile_align_h    16    rewritten
+  num_ccu          1    asserted
+  tile_align_h    16    asserted
   cs_shared_mem_size
                    32 KiB  rewritten. 18-wn-a8xx-shared-mem.py raises this to
                         64 KiB on every device entry, FD722 included, and it
@@ -44,22 +44,14 @@ import re
 import sys
 
 NAME = "57-fd722-duo.py"
+SUMMARY = ("FD722 num_ccu=1, tile_align_h=16, highest_bank_bit=15 (pinned), "
+           "cs_shared_mem_size=32 KiB")
 
 DEVICES_PY = "src/freedreno/common/freedreno_devices.py"
-# v5.4: MrPurple T30's GMEM configuration, which renders the Mario Kart 8 HUD
-# icons correctly with autotune enabled (its own meta.json: "num_ccu=2,
-# tile_align_h=32, highest_bank_bit=16 ... uses tu_autotune GMEM/sysmem
-# selection"). num_ccu and tile_align_h only really matter once passes render
-# in GMEM; our 1/16/15 set was only ever validated in a forced-sysmem build,
-# where they are close to inert. With Turnip-Z off, autotune turns GMEM on and
-# 1/16/15 produced UBWC corruption (purple/black lines) and a GPU hang.
 EXPECT = (1, 16)        # (num_ccu, tile_align_h)
 HBB = 15
-CS_SHARED_MEM_KIB = 32   # OEM blob limit; matches plain Mesa, which T30 is
-ENFORCE = False         # 56 writes the block first, so rewrite rather than assert
-
-SUMMARY = (f"FD722 num_ccu={EXPECT[0]}, tile_align_h={EXPECT[1]}, "
-           f"highest_bank_bit={HBB}, cs_shared_mem_size={CS_SHARED_MEM_KIB} KiB")
+CS_SHARED_MEM_KIB = 32   # per the OEM blob; patch 18 would leave this at 64
+ENFORCE = True          # False = rewrite the block to EXPECT instead of failing
 
 
 def main():

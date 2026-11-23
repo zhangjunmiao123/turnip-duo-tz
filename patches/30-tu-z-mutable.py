@@ -1,66 +1,65 @@
 #!/usr/bin/env python3
-"""Protect DRM_FORMAT_MOD_QCOM_COMPRESSED swapchain images from TILE6_LINEAR in tu_image_init.
+"""Turnip-Z port: keep MUTABLE_FORMAT images tiled (and UBWC) on GPUs without
+ubwc_all_formats_compatible (a6xx, a7xx gen1/gen2 such as FD710).
 
-On Android 16 with 15-wn-add-aimapper-gralloc.py and 16-wn-add-ubwc-swapchain-usage.py,
-swapchain AHardwareBuffers arrive in tu_image_init() with:
-  - pCreateInfo->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
-  - fmt_list == NULL
-  - modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED
+Env TU_Z_MUTABLE (default 2):
+  0  upstream behavior (linear + no UBWC when the format list has swaps)
+  1  stay tiled, UBWC off
+  2  stay tiled, UBWC kept (Turnip-Z default)
+R8G8<->R16 reinterpretation always falls back to linear, as upstream.
 
-In upstream Mesa, when !mutable_ubwc_fc (A710/A720/A722), fmt_list_has_swaps is true
-when fmt_list is NULL, setting force_linear_tile = true -> tile_mode = TILE6_LINEAR.
-Then at `if (modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED)`, assert(!force_linear_tile)
-is compiled out in release builds (-DNDEBUG) and ubwc_enabled = true is set while
-tile_mode remains TILE6_LINEAR, corrupting the swapchain with purple vertical lines.
-
-This patch leaves 100% of game-internal VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT handling untouched
-(pure upstream Mesa behavior, identical to T30 / build-0 where the Mario Kart 8 Deluxe item
-roulette icon renders properly), and ONLY ensures that when modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED,
-force_linear_tile is cleared and tile_mode = TILE6_3 is restored.
+Run from the Mesa source root. All edits are applied or none.
 """
 import sys
 
 NAME = "30-tu-z-mutable.py"
+MARKER = "TU_Z_MUTABLE"
 IMAGE = "src/freedreno/vulkan/tu_image.cc"
 
-OLD = (
-    '   if (modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED) {\n'
-    '      assert(!force_linear_tile);\n'
-    '      ubwc_enabled = true;\n'
-    '      force_ubwc = true;\n'
-    '   }\n'
-)
-
-NEW = (
-    '   if (modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED) {\n'
-    '      force_linear_tile = false;\n'
-    '      tile_mode = TILE6_3;\n'
-    '      ubwc_enabled = true;\n'
-    '      force_ubwc = true;\n'
-    '   }\n'
-)
+EDITS = [
+    (IMAGE,
+     '#include "tu_wsi.h"\n',
+     '#include "tu_wsi.h"\n'
+     '\n'
+     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", 2)\n',
+     1),
+    (IMAGE,
+     '         } else if (!mutable_ubwc_fc) {\n'
+     '            if (ubwc_enabled) {\n',
+     '         } else if (!mutable_ubwc_fc) {\n'
+     '            int64_t z_mutable = debug_get_option_tu_z_mutable();\n'
+     '            if (ubwc_enabled && z_mutable < 2) {\n',
+     1),
+    (IMAGE,
+     '            if (r8g8_r16 || fmt_list_has_swaps) {\n',
+     '            if (r8g8_r16 || (fmt_list_has_swaps && z_mutable < 1)) {\n',
+     1),
+]
 
 
 def main():
-    try:
-        s = open(IMAGE, encoding="utf-8").read()
-    except OSError as e:
-        print(f"{NAME}: WARNING cannot read {IMAGE}: {e}; skipped")
-        return 0
-
-    if NEW in s:
+    files = {}
+    for path, _, _, _ in EDITS:
+        if path not in files:
+            try:
+                files[path] = open(path, encoding="utf-8").read()
+            except OSError as e:
+                print(f"{NAME}: WARNING cannot read {path}: {e}; skipped")
+                return 0
+    if any(MARKER in s for s in files.values()):
         print(f"{NAME}: already applied")
         return 0
-
-    if s.count(OLD) != 1:
-        print(f"{NAME}: WARNING anchor matched {s.count(OLD)}x in {IMAGE}; skipped")
-        return 0
-
-    s = s.replace(OLD, NEW, 1)
-    with open(IMAGE, "w", encoding="utf-8", newline="\n") as f:
-        f.write(s)
-
-    print(f"{NAME}: applied (pure upstream mutable handling + QCOM_COMPRESSED TILE6_3 guard)")
+    for path, old, new, count in EDITS:
+        found = files[path].count(old)
+        if found != count:
+            print(f"{NAME}: WARNING anchor matched {found}x (want {count}) in {path}; "
+                  f"upstream changed, patch skipped")
+            return 0
+        files[path] = files[path].replace(old, new)
+    for path, s in files.items():
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(s)
+    print(f"{NAME}: applied (TU_Z_MUTABLE, default 2)")
     return 0
 
 

@@ -48,9 +48,8 @@
 
 | 包 | 定位 | 什么时候用 |
 |---|---|---|
-| **`base`** | **主力（v6.3 = v5.1 精确等效）** | 日常玩 Eden 用它。v6.3 把 base 逐字节恢复成上游 v5.1（同补丁集、同构建脚本、同 Mesa commit），预期帧率与 v5.1 一致 |
-| **`tz6f`** | 实验（v6.3） | `base` + texfast 省带宽档（TEXMIP=1 + LODBIAS=45），v5.1 之上唯一增量。比 base 快就转正 |
-| `tzeden` / `tzfast` / `tz5` / `tz5s` 等 | 已归档（v6.0–v6.2） | 实测均比 v5.1 慢，移入 `variants-archive/`，不再构建；要用哪个手动移回 `patches/variants/` |
+| **`base`** | **主力（v6.4 = v5.1 精确等效）** | 日常玩 Eden 用它。v6.4 把 `patches/` 整目录还原成上游 `5.1` tag 原文（v6.3 只做对了一半：大量补丁仍处于 `.off` 停用，`.so` 里没有 `TU_Z_*` 字符串就是证据），用 `diff -r` 校验逐字节一致。预期帧率与 v5.1 一致 |
+| `tzeden` / `tzfast` / `tz5` / `tz5s` / `tz6f` 等 | 已归档（v6.0–v6.3） | 实测均比 v5.1 慢，移入 `variants-archive/`，不再构建；要用哪个手动移回 `patches/variants/` |
 
 ### v6.1 相对 v6.0 改了什么（荒野之息实测反馈后）
 

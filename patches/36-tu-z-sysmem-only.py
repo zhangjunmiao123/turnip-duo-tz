@@ -1,63 +1,167 @@
 #!/usr/bin/env python3
-"""【v6.1 已停用，改名为 .off】原因见下，保留文件只为留档。
+"""Turnip-Z port: force sysmem rendering, and keep the bin-restore preamble
+consistent with it.
 
-为什么停用：PREFER_SYSMEM 在 tu_autotune::get_optimal_mode() 里是**提前返回**
-（tu_autotune.cc 里 `early_return_mode` 那一支），也就是说它不是"倾向"，而是
-"所有 render pass 一律走系统内存"。Adreno 722 只有 1 MiB GMEM，1080p 一帧本来
-就该切多 bin；但把整帧颜色/深度全部压到 DDR 上，在 Duo 这种带宽 ~17 GB/s、
-双屏 120Hz 还要扣掉 1.58 GB/s 的机器上，是纯粹的反向优化。荒野之息这类高
-overdraw 场景掉帧最明显。
+Turnip-Z renders everything in system memory on every GPU (TU_SD865_SYSMEM_ONLY,
+default on): use_sysmem_rendering() returns true after the upstream GMEM-blocking
+checks pass, instead of asking autotune. Because every pass is then sysmem, the
+bin restore preamble must be fixed up too, since upstream builds it once at
+startup for GMEM render passes:
 
-更重要的是：上游本来就有**运行时**开关 `TU_AUTOTUNE_ALGO`（bandwidth /
-profiled / profiled_imm / prefer_sysmem / prefer_gmem），在 tu_autotune.cc 的
-get_env_config() 里解析。所以想要 v5.1 那种强制 sysmem，只要在 Eden 的 Turnip
-环境变量里写 `TU_AUTOTUNE_ALGO=prefer_sysmem` 即可，不需要在编译期钉死。
+  - emit_rb_ccu_cntl() is called with gmem = true, so the CCU is reprogrammed
+    with the GMEM carveout layout even when every pass renders in sysmem. With
+    tiled + UBWC surfaces that mismatch corrupts individual pixels.
+  - tu6_init_static_regs() ends with two per-draw packets (SP_PS_CNTL_0 and
+    SP_VS_CONST_CONFIG) which the restore preamble must not touch.
 
-v6.1 因此回到上游默认（BANDWIDTH，按估算带宽逐个 render pass 自己选），
-把选择权交给运行时。
+Turnip-Z flips the CCU to the sysmem layout (gmem = !safe) and stops
+tu6_init_static_regs before its last two packets, where
+safe = TU_SD865_SAFE_AMBLE && TU_SD865_SYSMEM_ONLY.
 
---- 以下为原文件内容（已停用）---
+Knobs:
+  TU_Z_SYSMEM_ONLY (default true)  force sysmem for every render pass
+  TU_Z_SAFE_AMBLE  (default true)  fix the bin-restore preamble for sysmem
+safe is TU_Z_SAFE_AMBLE && (TU_DEBUG=sysmem || TU_Z_SYSMEM_ONLY), so with the
+default sysmem-only the amble fix is active on every GPU.
 
-Default tu_autotune algorithm to PREFER_SYSMEM on Adreno 722 (1 MiB GMEM).
+Needs nothing else; independent of 30/33. Applies to all GPUs.
 
-In upstream Mesa, tu_autotune::algorithm::PREFER_SYSMEM:
-1. Still honors all GMEM-required paths in tu_autotune::get_optimal_mode():
-   - sysmem_single_prim_mode (subpass feedback loops) -> GMEM
-   - pass->has_fdm (fragment density map) -> GMEM
-   - pass->has_msrtss (multisampled render to single sampled) -> GMEM
-2. Uses SYSMEM for normal 1080p render passes so the 1 MiB GMEM on Adreno 722
-   does not thrash into multi-bin tiling passes.
-3. Leaves tu6_init_static_regs() and emit_rb_ccu_cntl() 100% unmodified upstream Mesa.
+Run from the Mesa source root. All edits are applied or none.
 """
 import sys
 
 NAME = "36-tu-z-sysmem-only.py"
-AUTOTUNE = "src/freedreno/vulkan/tu_autotune.cc"
+MARKER = "TU_Z_SYSMEM_ONLY"
+FILE = "src/freedreno/vulkan/tu_cmd_buffer.cc"
 
-OLD = "   DEFAULT = BANDWIDTH, /* Default algorithm, used if no other is specified. */\n"
-NEW = "   DEFAULT = PREFER_SYSMEM, /* Default algorithm for Adreno 722 1 MiB GMEM. */\n"
+EDITS = [
+    (FILE,
+     '#include "tu_cmd_buffer.h"\n'
+     '\n'
+     '#include "vk_common_entrypoints.h"\n',
+     '#include "tu_cmd_buffer.h"\n'
+     '\n'
+     '#include "util/u_debug.h"\n'
+     '#include "vk_common_entrypoints.h"\n',
+     1),
+    (FILE,
+     'static bool\n'
+     'use_sysmem_rendering(struct tu_cmd_buffer *cmd,\n'
+     '                     tu_autotune::rp_ctx_t *rp_ctx,\n'
+     '                     tu_autotune::rp_key_opt rp_key)\n'
+     '{\n'
+     '   if (TU_DEBUG(SYSMEM)) {\n',
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_z_sysmem_only, "TU_Z_SYSMEM_ONLY", true)\n'
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_z_safe_amble, "TU_Z_SAFE_AMBLE", true)\n'
+     '\n'
+     'static bool\n'
+     'tu_z_is_safe_amble(void)\n'
+     '{\n'
+     '   return debug_get_option_tu_z_safe_amble() &&\n'
+     '          (TU_DEBUG(SYSMEM) || debug_get_option_tu_z_sysmem_only());\n'
+     '}\n'
+     '\n'
+     'static bool\n'
+     'use_sysmem_rendering(struct tu_cmd_buffer *cmd,\n'
+     '                     tu_autotune::rp_ctx_t *rp_ctx,\n'
+     '                     tu_autotune::rp_key_opt rp_key)\n'
+     '{\n'
+     '   if (TU_DEBUG(SYSMEM)) {\n',
+     1),
+    (FILE,
+     '   tu_autotune::render_mode optimal_mode =\n'
+     '      cmd->device->autotune->get_optimal_mode(cmd, rp_ctx, rp_key);\n'
+     '\n'
+     '   return optimal_mode == tu_autotune::render_mode::SYSMEM;\n',
+     '   if (debug_get_option_tu_z_sysmem_only()) {\n'
+     '      cmd->state.rp.force_render_mode_reason = "Turnip-Z: sysmem only";\n'
+     '      return true;\n'
+     '   }\n'
+     '\n'
+     '   tu_autotune::render_mode optimal_mode =\n'
+     '      cmd->device->autotune->get_optimal_mode(cmd, rp_ctx, rp_key);\n'
+     '\n'
+     '   return optimal_mode == tu_autotune::render_mode::SYSMEM;\n',
+     1),
+    (FILE,
+     'template <chip CHIP>\n'
+     'static void\n'
+     'tu6_init_static_regs(struct tu_device *dev, struct tu_cs *cs)\n'
+     '{\n'
+     '   const struct tu_physical_device *phys_dev = dev->physical_device;\n',
+     'template <chip CHIP>\n'
+     'static void\n'
+     'tu6_init_static_regs(struct tu_device *dev, struct tu_cs *cs,\n'
+     '                     bool bin_preamble = false)\n'
+     '{\n'
+     '   const struct tu_physical_device *phys_dev = dev->physical_device;\n',
+     1),
+    (FILE,
+     '   if (phys_dev->info->props.has_early_preamble) {\n'
+     '      tu_cs_emit_regs(cs, A6XX_SP_PS_CNTL_0());\n'
+     '   }\n',
+     '   if (phys_dev->info->props.has_early_preamble &&\n'
+     '       !(bin_preamble && tu_z_is_safe_amble())) {\n'
+     '      tu_cs_emit_regs(cs, A6XX_SP_PS_CNTL_0());\n'
+     '   }\n',
+     1),
+    (FILE,
+     '   /* Workaround for draw state with constlen not being applied for\n'
+     '    * zero-instance draw calls. See IR3_CONST_ALLOC_DRIVER_PARAMS allocation\n'
+     '    * for more info.\n'
+     '    */\n'
+     '   tu_cs_emit_regs(cs, SP_VS_CONST_CONFIG(CHIP,\n'
+     '      .constlen = 8,\n'
+     '      .enabled = true,\n'
+     '   ));\n',
+     '   /* Workaround for draw state with constlen not being applied for\n'
+     '    * zero-instance draw calls. See IR3_CONST_ALLOC_DRIVER_PARAMS allocation\n'
+     '    * for more info.\n'
+     '    */\n'
+     '   if (!(bin_preamble && tu_z_is_safe_amble())) {\n'
+     '      tu_cs_emit_regs(cs, SP_VS_CONST_CONFIG(CHIP,\n'
+     '         .constlen = 8,\n'
+     '         .enabled = true,\n'
+     '      ));\n'
+     '   }\n',
+     1),
+    (FILE,
+     '   tu6_init_static_regs<CHIP>(dev, cs);\n'
+     '\n'
+     '   if (!bv)\n'
+     '      emit_rb_ccu_cntl<CHIP>(cs, dev, true);\n',
+     '   tu6_init_static_regs<CHIP>(dev, cs, true);\n'
+     '\n'
+     '   if (!bv)\n'
+     '      emit_rb_ccu_cntl<CHIP>(cs, dev, !tu_z_is_safe_amble());\n',
+     1),
+]
 
 
 def main():
-    try:
-        s = open(AUTOTUNE, encoding="utf-8").read()
-    except OSError as e:
-        print(f"{NAME}: WARNING cannot read {AUTOTUNE}: {e}; skipped")
-        return 0
-
-    if NEW in s:
+    files = {}
+    for path, _, _, _ in EDITS:
+        if path not in files:
+            try:
+                files[path] = open(path, encoding="utf-8").read()
+            except OSError as e:
+                print(f"{NAME}: WARNING cannot read {path}: {e}; skipped")
+                return 0
+    if any(MARKER in s for s in files.values()):
         print(f"{NAME}: already applied")
         return 0
-
-    if s.count(OLD) != 1:
-        print(f"{NAME}: WARNING anchor matched {s.count(OLD)}x in {AUTOTUNE}; skipped")
-        return 0
-
-    s = s.replace(OLD, NEW, 1)
-    with open(AUTOTUNE, "w", encoding="utf-8", newline="\n") as f:
-        f.write(s)
-
-    print(f"{NAME}: applied (tu_autotune DEFAULT = PREFER_SYSMEM)")
+    for path, old, new, count in EDITS:
+        found = files[path].count(old)
+        if found != count:
+            print(f"{NAME}: WARNING anchor matched {found}x (want {count}) in {path}; "
+                  f"upstream changed, patch skipped")
+            return 0
+    for path, old, new, count in EDITS:
+        files[path] = files[path].replace(old, new)
+    for path, s in files.items():
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(s)
+    print(f"{NAME}: applied (TU_Z_SYSMEM_ONLY default on, TU_Z_SAFE_AMBLE default on)")
     return 0
 
 
