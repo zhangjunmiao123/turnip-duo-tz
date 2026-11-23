@@ -6,7 +6,27 @@
 
 ---
 
-## v6.1 修的两个问题（荒野之息实测反馈）
+## v6.2：实测推翻了 v6.1 的方向，现在逐项对齐 v5.1
+
+你在荒野之息上实测：**v6.1 的 `tzeden` 和 `tzfast` 都比 v5.1 慢**，而且 v5.1 本身也有锯齿（锯齿不用管，帧率优先）。这说明 v6.1「放开 GMEM」的方向错了，也说明 v6.0 的慢不只来自帧数，还有别的新增负重。逐项对照 v5.1 的补丁集后，找到了 v6.0/v6.1 共同引入、而 v5.1 没有的东西：
+
+| # | v6.0/v6.1 新增 | 为什么可能是减速源 | v6.2 怎么处理 |
+|---|---|---|---|
+| 1 | 56 号把 `enable_tp_ubwc_flag_hint` 设成 `False` | 纹理处理器不吃 UBWC flag 提示 → 压缩纹理取数退化 → **带宽变大**。这台机器只有 ~17 GB/s，贴图密集的游戏最先爆 | 恢复上游默认（True），同时 `has_lpac` 也恢复 |
+| 2 | 56 号把 `raw_magic_regs` 换成自造的 `a722_*`（v5.1 用 `a730_*`） | 这类寄存器写错不花屏，只表现为帧率差异 | 恢复 `a730_raw_magic_regs` |
+| 3 | 33/37 号全局 BGRA 实色交换、31 号 LRZ rescue | v5.1 都没有；BGRA 会改动 shader 输出/写掩码/clear/blit 全部写路径 | `tz5` 不带；`tz5s` 带着做对照 |
+| 4 | v6.1 放开 GMEM（autotune BANDWIDTH + 2/32/16） | 实测更慢 —— 1 MiB GMEM 装不下 1080p pass，多 bin 来回搬不划算 | 35b 号按 v5.1 的做法把 A722 钉回 sysmem；几何回设备真值 1/16/15 |
+
+v6.2 出两个包：
+
+- **`tz5`（主力）**：v5.1 等效 + texfast 省带宽档（`TU_Z_TEXMIP=1` + `TU_Z_LODBIAS=45`，你已确认不在乎锯齿）。预期帧率 ≥ v5.1。
+- **`tz5s`（对照）**：与 tz5 唯一差别是保留 BGRA swap 和 LRZ rescue。tz5s 比 tz5 慢 → 这两项就是 v6.0 减速的来源；持平或更快 → 留着。
+
+`tz5` 上还有一个运行时逃生开关 `TU_Z_FORCE_GMEM=1`：想在**不重编**的情况下走回 GMEM/autotune 路径对比，设它就行。
+
+---
+
+## v6.1 的结论（已被 v6.2 推翻，留作记录）
 
 v6.0 的 `tzeden` 在塞尔达旷野之息上「帧数更低 + 边缘锯齿严重」。查完源码，两个症状的性质**不一样**，先说清楚：
 
@@ -110,7 +130,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 ## 第 2 步：跑第一次构建（先只出 1 个包）
 
-**这里有个关键建议：第一次只编 `tzeden` 一个变体。**
+**这里有个关键建议：第一次只编 `tz5` 一个变体。**
 
 理由：4 个变体是**各自从干净源码树完整编译一遍**（构建脚本每个变体都 `git reset --hard` + `clean -fdx`），首次还要额外下载 1.5GB 的 NDK。4 个一起跑容易撞 120 分钟超时；先单个跑通链路，确认补丁、打包、产物都对，再批量。单个首次约 **30–40 分钟**。
 
@@ -123,8 +143,8 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 | 参数 | 填什么 | 说明 |
 |---|---|---|
-| `version` | `6.1` | 只影响 zip 名，别填中文 |
-| `variants` | **`tzeden`** | ← 第一次只填这一个 |
+| `version` | `6.2` | 只影响 zip 名，别填中文 |
+| `variants` | **`tz5`** | ← 第一次只填这一个 |
 | `mesa_ref` | **保持默认不动** | `74920caa...913b`，动了补丁锚点可能全部失效 |
 | `cpu_flags` | `-march=armv8.2-a` | 保持默认。这是唯一零画质风险的改动，别清空 |
 
@@ -135,7 +155,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 点进正在跑的那次运行，展开 `Build` 步骤的日志。**正常**的日志会长这样：
 
 ```
-==== Building v6.1-tzeden ====
+==== Building v6.2-tz5 ====
 [56-fd722-blob.py] applied ...
 [57-fd722-duo.py] applied ...
 ```
@@ -163,13 +183,13 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 2. 下载到的是一个 zip，**先解压这一次**，里面是：
 
 ```
-Turnip-Duo-TZ-v6.1-tzeden.zip     ← 这个才是驱动包
-patches-tzeden.txt                ← 补丁日志（和 Summary 里一样）
+Turnip-Duo-TZ-v6.2-tz5.zip     ← 这个才是驱动包
+patches-tz5.txt                ← 补丁日志（和 Summary 里一样）
 build-info.env                    ← Mesa 提交号、版本
 build-tz.log                      ← 完整编译日志
 ```
 
-3. **`Turnip-Duo-TZ-v6.1-tzeden.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
+3. **`Turnip-Duo-TZ-v6.2-tz5.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
 
 ---
 
@@ -181,8 +201,8 @@ build-tz.log                      ← 完整编译日志
 
 1. 打开 **Eden**
 2. **设置 → 图形（Graphics）→ GPU 驱动（GPU driver）**
-3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.1-tzeden.zip`
-4. 列表里应该出现一项 **`Turnip Duo TZ v6.1-tzeden`**
+3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.2-tz5.zip`
+4. 列表里应该出现一项 **`Turnip Duo TZ v6.2-tz5`**
 5. 选中它（选中即生效，会提示重启模拟器/游戏）
 
 **不需要 root，不动系统驱动。** 想回退就在同一个界面切回"系统驱动"，或删掉这一项。
@@ -193,7 +213,7 @@ build-tz.log                      ← 完整编译日志
 
 ### 方式 A：看 Eden 里的驱动名（最快）
 
-设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.1-tzeden`。这是"选中了"，但不代表"加载成功"。
+设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.2-tz5`。这是"选中了"，但不代表"加载成功"。
 
 ### 方式 B：看 logcat（最可靠）
 
@@ -243,11 +263,7 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722"
 
 这是现在信息量最大的一组实验，但**有一条硬约束，先看这一条**：
 
-> ⚠️ **v6.1 起 `tzeden` 的几何是 `num_ccu=2 / tile_align_h=32 / hbb=16`（T30 在 A722 实机 + autotune 开启下验证过的那套），所以 autotune 选 GMEM 是预期行为。**
->
-> 但仍然**不建议手动设 `TU_DEBUG=gmem`**：那是把所有 render pass 无条件塞进 1 MiB 片上 GMEM，连本该走 sysmem 的大 pass 也塞，纯粹是自找多 bin 来回搬。要让 GMEM 用得多一点，用 `TU_AUTOTUNE_FLAGS=big_gmem`（≥10 次绘制的 pass 进 GMEM），让算法自己去判断。
->
-> 反过来，**如果画面出现紫黑横条/横向条带**，说明 2/32/16 在你的机器上不成立——立刻加 `TU_DEBUG=sysmem` 绕开 GMEM，并把现象告诉我。
+> ⚠️ **v6.2 起 `tz5` 默认就是强制 sysmem**（v5.1 的行为，35b 号补丁按 chip_id 钉死），所以不需要也不建议手动设 `TU_DEBUG=gmem` 或 `TU_DEBUG=sysmem`——前者会把所有 pass 无条件塞进 1 MiB GMEM，后者是重复操作。想临时走回 GMEM/autotune 路径对比，设 `TU_Z_FORCE_GMEM=1`。
 
 社区口径本身也**互相矛盾**：Vauzi-17（710/720/722 驱动的作者）推荐 `sysmem` 作默认，而 MrPurple 在 Eden 的 PR 里说 A710/720 必须 `gmem` 才正常。两者对应的却不是同一套几何参数——这大概就是矛盾的原因。A722 没人公开测过。
 
@@ -257,38 +273,35 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 
 **如果找不到这个入口**（版本太老），跳过 8.2，直接用 `tzsys` 包代替——那个包把 `TU_DEBUG=sysmem` 写死在驱动里了。
 
-### 8.2 在 `tzeden` 上跑显存模式三档（不重编，30 秒一档）
+### 8.2 在 `tz5` 上跑四档（不重编，30 秒一档）
 
-v6.1 起显存模式是**运行时**决定的，变量叫 `TU_AUTOTUNE_ALGO`：
+v6.2 的 `tz5` 默认就是强制 sysmem（v5.1 行为），所以变量只用来**对照**：
 
 | 轮次 | Eden 驱动设置里写 | 含义 |
 |---|---|---|
-| **基线** | 什么都不加 | 内置默认 `bandwidth`，上游算法：按估算带宽逐个 render pass 选 GMEM / sysmem |
-| B | `TU_AUTOTUNE_ALGO=profiled` | 用 GPU 时间戳实测数据来学，通常更准，但有几十帧的学习期 |
-| C | `TU_DEBUG=sysmem` | 强制系统内存，等于 **v6.0 的行为**。跑这一档是为了亲眼确认"帧数低是不是它害的" |
+| **基线** | 什么都不加 | 强制 sysmem（= v5.1）+ texfast 省带宽 |
+| B | `TU_Z_LODBIAS=20` | 把 LOD 偏置收小（远景更清楚，带宽略多） |
+| C | `TU_Z_FORCE_GMEM=1` | 运行时走回 GMEM/autotune 路径 —— 用来验证"GMEM 更慢"这个结论 |
+| D | `TU_Z_TEXMIP=0` `TU_Z_LODBIAS=0` | 关掉 texfast = 纯 v5.1 等效，量出 texfast 到底赚了多少 |
 
-> v6.0 里 36 号补丁把 `PREFER_SYSMEM` 钉死在编译期，等于默认就是上面 C 那一档，而且关不掉。v6.1 停用了它——想要 C 的效果，写一行变量就行。
+判读：**基线 ≥ v5.1 → 成功**；C 慢于基线 → GMEM 结论成立，这条变量以后不用再设；D 明显慢于基线 → texfast 在起作用。
 
-**不设 `gmem` 这一档**，原因见上面那条硬约束。
+**画质不用看了**：你已确认锯齿不重要。如果远景糊得影响玩，降 `TU_Z_LODBIAS` 就行，不用换包。
 
-### 8.2b 画质对照：确认锯齿的来源（10 分钟，不用重编）
+### 8.2b tz5 vs tz5s：一次构建两个包的对照
 
-按这个顺序在 `tzeden` 上逐档加变量，每次都回到同一个存档点、看同一片远景草地：
+先测 `tz5`，记下基线帧率；再装 `tz5s`，同样设置再测一次。两个包只有 BGRA swap + LRZ rescue 的差别：
 
-| 档 | 加什么 | 应该看到 |
-|---|---|---|
-| ① | 什么都不加 | **最锐利**的远景。如果这一档还是"锯齿严重"，那锯齿不是驱动造成的，是 720p 拉伸到 1080p 的固有结果（荒野之息本身没有抗锯齿） |
-| ② | `TU_Z_LODBIAS=30` | 远景略糊一点，但边缘抖动没有明显恶化 |
-| ③ | `TU_Z_TEXMIP=1` | **抖动/发毛明显回来**——这就是 v6.0 的锯齿来源。确认过这一档，以后就别开了 |
+- `tz5s` 更慢 → 这两项就是 v6.0/v6.1 减速的来源之一，以后的主线包永远不带；
+- 持平或更快 → 可以把 `tz5s` 当日常包（它顺便解决了某些游戏的红蓝互换问题）。
 
-如果 ① 就已经比之前用 v6.0 时好很多，那问题已经解决，②③ 不用再试。
+### 8.3 万一 `tz5` 还是比 v5.1 慢
 
-### 8.3 出横条就往回退一格
+那就说明 v6.2 还没对齐完 v5.1，嫌疑收窄到 base 里 v5.1 也有的少数补丁。按这个顺序用**运行时变量**排除，不用重编：
 
-v6.1 的几何已经是 T30 那套（2/32/16），正常情况下不需要换包。只有一种情况要动：
-
-- **看到紫黑横条 / 横向条带** → 这不是分辨率问题，是 GMEM 里的 UBWC 几何不成立。Eden 环境变量里加 `TU_DEBUG=sysmem`，立刻恢复；确认是这个问题我再把几何改回 1/16/15 重编。
-- **想验证"1 CCU 到底差多少"** → 不用编 `tzccu2` 了（它写的是 2/32，与 v6.1 base 已相同，等于空操作）。要测 1/16/15 得改 `57-fd722-duo.py` 里的 `EXPECT`，**并且只在 `TU_DEBUG=sysmem` 下测**，否则会 UBWC 损坏。
+1. `TU_KGSL_GOVERNOR_OFF=0` —— 排除 governor 强制的因素；
+2. `TU_Z_TEXFAST=0` —— 排除 texfast；
+3. 还慢 → 把现象和帧数告诉我，我再往下查（剩下的差异在 15/16/01/25/30 这几个 v5.1 就有的补丁里，需要逐个做开关）。
 
 ### 8.4 每轮怎么测
 
@@ -305,18 +318,17 @@ v6.1 的几何已经是 T30 那套（2/32/16），正常情况下不需要换包
 
 ---
 
-## 第 9 步：剩下三个包，看情况再编
+## 第 9 步：其它包，看情况再编
 
-**先别急着编。** 等第 8 步出结论再说：
+**先别急着编。** 等 8.2/8.2b 出结论再说：
 
-- 如果 A/B/C 里某一档明显赢，**先只玩这一档**，够用了。
-- 如果三档都差不多、你想知道 texfast（我们的驱动相对原版到底改了多少），再跑一次 workflow，`variants` 填 `tzfast tzvauzi tzsys`。
-  - `tzfast` = texfast 三件套全开（关各向异性 + mip 取最近 + LOD +0.45），量"省纹理带宽"到底值多少帧，画质代价一眼可见
-  - `tzqual` = 与 `tzeden` 同画质基线、只是不带 texfast 补丁的对照包（想严格验证补丁本身有没有开销时用）
-  - `tzvauzi` = 换成外部那套完整的 A722 寄存器表（几何同为 2/32/16，差异在 magic regs）
-  - `tzsys` = 把 `TU_DEBUG=sysmem` 写死的兜底版（Eden 里设不了环境变量时用）
+- `tz5` ≥ v5.1 且 `tz5s` 与它持平 → 主线就定 `tz5`（或 `tz5s`，看哪个顺手），结束。
+- 想要更极致的画质对照再跑一次 workflow，`variants` 填 `tzqual tzvauzi tzsys`：
+  - `tzqual` = v6.2 base + 关 texfast 的画质对照包
+  - `tzvauzi` = 外部逆向的完整 A722 寄存器表（走 GMEM 的几何 2/32/16，配合 `TU_Z_FORCE_GMEM=1` 才有意义）
+  - `tzsys` = sysmem 兜底版
 
-编完后的产物名：`Turnip-Duo-TZ-v6.1-tzqual.zip` 等，装法同第 5 步，但**一次只装一个、测完删掉再装下一个**，否则你分不清是哪个在起作用。
+编完后的产物名：`Turnip-Duo-TZ-v6.2-tzqual.zip` 等，装法同第 5 步，但**一次只装一个、测完删掉再装下一个**，否则你分不清是哪个在起作用。
 
 ---
 
@@ -335,7 +347,7 @@ v6.1 的几何已经是 T30 那套（2/32/16），正常情况下不需要换包
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| workflow 跑了 120 分钟超时 | 4 个变体一次编 + 首次下 NDK | `variants` 只填 `tzeden` 重跑，NDK 有缓存会快很多 |
+| workflow 跑了 120 分钟超时 | 4 个变体一次编 + 首次下 NDK | `variants` 只填 `tz5` 重跑，NDK 有缓存会快很多 |
 | `Downloading NDK` 失败/超时 | 网络抖动 | 直接重跑，缓存会续上 |
 | Summary 里 `no-change` | 补丁锚点对不上上游源码 | 把截图发我，我改锚点 |
 | 装完进游戏黑屏 | 该变体参数不适合 | Eden 里切回系统驱动，报告是哪个包 |
@@ -352,4 +364,4 @@ v6.1 的几何已经是 T30 那套（2/32/16），正常情况下不需要换包
 - **Actions 里另外 4 个 workflow**：`Build Turnip (Adreno 722)`、`Turnip Duo v7.0`、`Turnip Duo v3.1`、`Turnip A722 bisect builds`。它们都是上游遗留、手动触发，其中 `Build Turnip (Adreno 722)` 引用的两个 stable 补丁文件在本仓库已移到 `legacy-patches/`，跑了会直接报错。你只需要 `Build Turnip Duo TZ`。
 - **别同时装多个驱动包**，Eden 只用一个，装了也分不清。
 - **别在测驱动的同时改分辨率**——第 7 步定死它就是为了这个。
-- **先只跑 `tzeden`**，把基线立起来；`tzvauzi` 是寄存器表的对照包，等基线稳了再碰。
+- **先只跑 `tz5`**，把基线立起来；`tzvauzi` 是寄存器表的对照包，等基线稳了再碰。

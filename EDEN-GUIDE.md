@@ -48,10 +48,12 @@
 
 | 包 | 定位 | 什么时候用 |
 |---|---|---|
-| **`tzeden`** | **主力（v6.1 复位版）** | 日常玩 Eden 就用它。默认画质等同于上游（三线性不损、不加 LOD 偏置、autotune 走上游 `BANDWIDTH`），所有省带宽的开关都留到运行时 |
-| `tzfast` | 帧数对照 | texfast 三件套全开（关各向异性 + mip 取最近 + LOD +0.45）。用来量"省纹理带宽到底值多少帧"，画质代价一眼可见 |
-| `tzqual` | 补丁对照 | 和 `tzeden` 画质相同、只是不带 texfast 那套补丁，用于严格验证补丁本身有没有额外开销 |
-| `tzvauzi` | 寄存器表对照 | 换成外部那套完整的 A722 条目（几何同为 2/32/16，差异在 magic regs） |
+| **`tz5`** | **主力（v6.2 帧率优先）** | 日常玩 Eden 用它。逐项对齐 v5.1（a730 magic regs、UBWC hint 开、LPAC 开、1/16/15 几何、强制 sysmem），再去掉 v6.0 新增的 BGRA/LRZ，只留 texfast 省带宽档（TEXMIP=1 + LODBIAS=45） |
+| **`tz5s`** | 对照（v6.2） | 与 tz5 唯一差别：保留 BGRA swap + LRZ rescue。tz5s 更慢 → 这两项就是 v6.0/v6.1 减速的来源；持平或更快 → 可当日常包 |
+| `tzeden` | v6.1 复位版（已被 v6.2 取代） | 默认画质等同上游、autotune 走 BANDWIDTH；实测比 v5.1 慢，留作存档 |
+| `tzfast` | v6.1 帧数对照 | texfast 三件套全开 + GMEM 放开；实测比 v5.1 慢 |
+| `tzqual` | 补丁对照 | 不带 texfast 补丁，用于严格验证补丁本身有没有额外开销 |
+| `tzvauzi` | 寄存器表对照 | 外部逆向的完整 A722 条目（几何 2/32/16）；配 `TU_Z_FORCE_GMEM=1` 才有意义 |
 | `tzsys` | 兜底 | Eden 里设不了环境变量、又必须强制 sysmem 时用 |
 
 ### v6.1 相对 v6.0 改了什么（荒野之息实测反馈后）
