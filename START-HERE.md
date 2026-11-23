@@ -21,9 +21,33 @@
 
 ## 第 1 步：把仓库推到 GitHub（10 分钟）
 
-仓库已经在 `C:\Users\zhang\WorkBuddy\2026-11-23-06-46-20\turnip-duo-tz` **就地初始化好了**：`main` 分支已建、全部文件已暂存、换行符已统一成 LF。**你不需要 `git init`，也不需要 `git add`。**
+仓库已经在 `C:\Users\zhang\WorkBuddy\2026-11-23-06-46-20\turnip-duo-tz` **就地初始化并提交好了**：
 
-> 注意：你本机还没有配置 git 身份（`user.name` / `user.email` 都是空的），所以下面那两行 `git config` 必须执行，否则 `git commit` 会直接报 `Author identity unknown`。
+- `main` 分支已建，114 个文件已提交（提交号 `c28b916`）
+- 换行符已统一成 LF，`.gitattributes` 已加
+- 作者信息已设为 `zhangjunmiao123 <zhangjunmiao123@users.noreply.github.com>`
+
+**你不需要 `git init` / `git add` / `git commit`。** 只剩「建远程仓库 + push」两件事。
+
+### 1.0 先解决 `git` 命令找不到（已替你修好一半）
+
+WorkBuddy 自带了一个 PortableGit（2.55），但它原来不在系统 PATH 里，所以 PowerShell 报 `无法将"git"项识别为...`。已经把这个目录写进你的**用户 PATH**：
+
+```
+C:\Users\zhang\.workbuddy\binaries\PortableGit\versions\1.3.0\cmd
+C:\Users\zhang\.workbuddy\binaries\PortableGit\versions\1.3.0\mingw64\bin
+```
+
+**但已经打开的 PowerShell 窗口不会自动生效。** 二选一：
+
+- **办法 A（推荐）**：关掉当前 PowerShell，重新开一个，执行 `git --version`，应该显示 `git version 2.55.0.windows.3`。
+- **办法 B（不想重开）**：在当前窗口先执行一次，本次会话就能用：
+  ```powershell
+  $env:Path += ";C:\Users\zhang\.workbuddy\binaries\PortableGit\versions\1.3.0\cmd;C:\Users\zhang\.workbuddy\binaries\PortableGit\versions\1.3.0\mingw64\bin"
+  ```
+
+> 如果 `git --version` 还是报错，就用完整路径直接调：
+> `& "C:\Users\zhang\.workbuddy\binaries\PortableGit\versions\1.3.0\cmd\git.exe" --version`
 
 ### 1.1 先在网页上建空仓库
 
@@ -33,20 +57,20 @@
 4. **下面三个勾一个都别打**（README / .gitignore / license 都不要，打了 push 会冲突）
 5. 点 **Create repository**
 
-### 1.2 在终端执行（把两处中文占位符换成你的）
+### 1.2 在终端执行（只管 push）
 
-```bash
-cd "C:/Users/zhang/WorkBuddy/2026-11-23-06-46-20/turnip-duo-tz"
-git config --local user.name  "你的GitHub用户名"
-git config --local user.email "你的GitHub邮箱"
-git commit -m "Turnip Duo TZ: Eden-tuned variants with pinned Turnip-Z defaults"
-git remote add origin https://github.com/你的用户名/turnip-duo-tz.git
+```powershell
+cd "C:\Users\zhang\WorkBuddy\2026-11-23-06-46-20\turnip-duo-tz"
+git remote add origin https://github.com/zhangjunmiao123/turnip-duo-tz.git
 git push -u origin main
 ```
 
-首次 push 会弹出一个浏览器窗口让你登录 GitHub，授权一次就行（本机已装 Git Credential Manager）。
+**如果 `zhangjunmiao123` 不是你的 GitHub 用户名**，把第一条 `git remote add` 里的名字改掉；已经加错了就改：
+```powershell
+git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.git
+```
 
-> 如果这一步报 `remote origin already exists`：执行 `git remote set-url origin https://github.com/你的用户名/turnip-duo-tz.git` 再 push。
+首次 push 会弹出浏览器窗口让你登录 GitHub，授权一次就行（凭据管理器已配置 `credential.helper = manager`，以后不用再登）。
 
 ### 1.3 确认推上去了
 
