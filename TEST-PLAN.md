@@ -43,7 +43,7 @@
 
 | 对照 | 对比对象 | 场景 | 期望看到什么 |
 |---|---|---|---|
-| `tzsys` | `tzqual` | 同上一款 | 若 FPS 明显更高 → 1 MiB GMEM 走 GMEM 路径是纯浪费；若更低或有花屏 → `PREFER_SYSMEM` 的软化版（36 号补丁）才是正解 |
+| `tzsys` | `tzeden` | 同上一款 | 若 FPS 明显更高 → 瓶颈在填充率/带宽而非 GMEM 几何；若更低或有花屏 → 直接用 `tzeden` 的 autotune（`TU_AUTOTUNE_ALGO=bandwidth`） |
 | `tzccu2` | `tzqual` | 同上一款 | 若更高且**无横向条带/撕裂** → v5.1 的 `num_ccu=1, tile_align_h=16` 过保守；若出条带 → 立刻判定 1/16 是对的，以后不用再试 |
 
 CCU 这一项要特别看画面：`tile_align_h` 配错不会崩，只会让画面出现固定周期的横向条纹或色块错位。建议**截图对比**而不是只凭肉眼，静态场景最容易看出来。
@@ -61,7 +61,7 @@ v5.1 的 README 声称 Cemu（风之杖 HD）和 Azahar（时之笛 3D 4x）也�
 
 - **`tzfast` 全面赢且画质能接受** → 就用 `tzfast`，再考虑把 `tzsys`/`tzccu2` 里赢的那一项叠上去，编一个 `tzfast+赢家` 的合并版。
 - **`tzfast` 帧数没提升** → 说明这款游戏的瓶颈不在纹理带宽（更可能是几何/CPU 侧），关掉 texfast，转去看 `tzccu2`。
-- **`tzsys` 赢** → 下一步应在 `tzqual` 基础上把 36 号补丁的 `PREFER_SYSMEM` 换成更硬的 sysmem 策略，而不是全局 `TU_DEBUG=sysmem`（后者会关掉一些上游判断，长期不稳）。
+- **`tzsys` 赢** → 说明这台机器上 GMEM 路径确实不划算。v6.1 里 36 号已停用，所以直接在 Eden 设 `TU_AUTOTUNE_ALGO=prefer_sysmem` 就等价于 `tzsys`，不用换包、也不用全局 `TU_DEBUG=sysmem`（后者会连带关掉一些上游判断，长期不稳）。
 - **四个都差不多** → 好消息：v5.1 已经把这套潜力吃干净了，剩下的只能等上游 Mesa 的 A7xx 优化落地，或者自己去啃 TurnipZ 0.4.0 那三个画面修复。
 
 ## 记录模板（直接贴到 GitHub Issue）
@@ -70,7 +70,7 @@ v5.1 的 README 声称 Cemu（风之杖 HD）和 Azahar（时之笛 3D 4x）也�
 设备：Retroid Pocket Duo / Q-7790 / Adreno 722
 系统：Android 16，性能模式=Extreme，风扇=Sport
 Eden：<版本号>，精度 Normal，VSync Mailbox，关异步着色器压缩
-驱动：Turnip-Duo-TZ v6.0-<变体>
+驱动：Turnip-Duo-TZ v6.1-<变体>
 
 MK8D 1080p docked  : <FPS>  卡顿：<有/无>
 MK8D 720p handheld : <FPS>

@@ -27,7 +27,7 @@ Duo 仓库 README 里那句 `Patches 30-37: Turnip-Z engine (mutable-format UBWC
 | 32 | 关各向异性、mip 取最近、LOD +`TU_Z_LODBIAS/100` | **最核心的省钱手段**（各家实测提升主要来自这里） |
 | 33+37 | B8G8R8A8 在 tiled 图上的真实色序交换（含输出/掩码/清除/拷贝/Blit 全链路） | BGRA 正确性配套 |
 | 34+35 | 可变格式列表全 BGRA8 时保持 tiled 并走 `is_mutable` | 保留 UBWC 带宽优势 |
-| 36 | `tu_autotune` 默认算法改 `PREFER_SYSMEM` | 「sysmem 渲染」 |
+| 36 | `tu_autotune` 默认算法改 `PREFER_SYSMEM` | 「sysmem 渲染」（**v6.1 已停用**，见附录五：它是提前返回 = 硬强制，不是"倾向"） |
 
 而且 **v5.1 的二进制里这些开关都在**，我扫了 `.so` 的字符串表：
 
@@ -56,7 +56,8 @@ TU_Z_MUTABLE  TU_Z_SYSMEM_ONLY  TU_Z_SAFE_AMBLE
    v5.1 到底默认开的哪一个，二进制里查不出来（布尔默认值是立即数，没有字符串可循）。不显式钉住，你就永远不知道自己在测什么。这是本方案性价比最高的一步。
 2. **CPU 侧编译优化。** 仓库自己承认 `ANDROID_CPU_FLAGS` 这个钩子「idea from turnip-sd865-z, change 4」，但**默认是空的**——等于这个免费的东西一直没吃。它只影响着色器编译和命令录制（不损画质），正是 TurnipZ「编译着色器时更少卡顿」的来源。
 3. **CCU 几何 1/16 还是 2/32。** 这里两条流水线自相矛盾：`57-fd722-duo.py` 把 A722 钉死成 `num_ccu=1, tile_align_h=16`，而同一仓库的 `build-turnip.yml` 写着「A722 device values = `--ccu2`：num_ccu 2, tile_align_h 32, hbb 16」。`num_ccu` 不是调优参数，它会被乘进颜色/深度的 bin 几何——**猜错要么浪费一半并行度，要么出条带**。只能用实测裁决。
-4. **强制 sysmem 还是交给 autotune。** A722 只有 **1 MiB 片上 GMEM**，1080p 一帧塞不进去，走 GMEM 就得切成多个 bin 来回搬。TurnipZ 在 865 上能赢，很大程度是「干脆不走 GMEM」。36 号补丁已经软化成 `PREFER_SYSMEM`（保留 FDM/MSRTSS/反馈环的 GMEM 例外），但**没强制**；`TU_DEBUG=sysmem` 才是彻底版，而且它是 31 号 LRZ rescue 生效的前提。
+4. **强制 sysmem 还是交给 autotune。** ~~A722 只有 1 MiB 片上 GMEM，1080p 一帧塞不进去，走 GMEM 就得切成多个 bin 来回搬。TurnipZ 在 865 上能赢，很大程度是「干脆不走 GMEM」。36 号补丁已经软化成 `PREFER_SYSMEM`（保留 FDM/MSRTSS/反馈环的 GMEM 例外），但**没强制**；`TU_DEBUG=sysmem` 才是彻底版，而且它是 31 号 LRZ rescue 生效的前提。~~
+   **↑ 这段结论已被实测推翻，见附录五。** `PREFER_SYSMEM` 在 `tu_autotune::get_optimal_mode()` 里走的是 `early_return_mode` 分支，也就是**所有** render pass 提前返回 SYSMEM，根本没有"倾向"这回事；1080p 在 1 MiB GMEM 上切多 bin 的开销，远小于把整帧颜色/深度压到 17 GB/s 的 DDR 上。36 号已在 v6.1 停用。
 
 ## 五、拿不到的部分（说清楚，不画饼）
 
@@ -343,4 +344,116 @@ props->maxComputeSharedMemorySize = pdevice->info->cs_shared_mem_size;
 
 本仓库 36 号补丁把 autotune 默认钉成 `PREFER_SYSMEM`，所以**默认配置是自洽安全的**。但一旦在 Eden 里手动设 `TU_DEBUG=gmem`，就绕开了这层保护，正好踩进那个坑。
 
-**结论：`gmem` 只能配 2/32/16 的 `tzvauzi`，不能配 1/16/15 的 `tzeden` / `tzqual` / `tzsys`。** 这条已同步修正 `START-HERE.md` 与 `EDEN-GUIDE.md`。
+**结论（v6.0 时点）：`gmem` 只能配 2/32/16 的 `tzvauzi`，不能配 1/16/15 的 `tzeden` / `tzqual` / `tzsys`。**
+
+> **v6.1 更新：这一条已经被反过来解决。** 与其为了迁就 1/16/15 而永远强制 sysmem，不如把几何换成 GMEM 下验证过的 2/32/16，然后让 autotune 正常选。见附录五。
+
+---
+
+# 附录五、荒野之息实测反馈后的复盘（v6.1）
+
+现场：RP Duo（Q-7790 / A722）+ Eden，塞尔达旷野之息，装 `tzeden` v6.0 后
+**帧数比之前更低，且边缘锯齿严重**。逐条查源码后的结论分两类。
+
+## 一、锯齿：v6.0 引入的真回归
+
+32 号补丁（`patches/variants/*/32-tu-z-texfast.py`）对普通采样器做了三件事：
+
+```c
+aniso = 0;              /* 关各向异性 */
+miplinear = false;      /* 三线性 → 最近 mip */
+lod_bias += TU_Z_LODBIAS/100;
+```
+
+而 v5.1 的对应实现（`legacy-patches/04-tu-z-sampler-lodbias.patch`）**只有第三件**：
+
+```c
+lod_bias = CLAMP(lod_bias + debug_get_option_z_lodbias() / 100.0f, ...);
+```
+
+`miplinear = false` 把 mip 之间的插值去掉了，采样只在单一 mip 层上做，层与层的
+切换变成硬跳变。荒野之息满屏草地/地面/远景植被，是这类 aliasing 最敏感的场景：
+静止时看不出，一动起来边缘就"发毛、爬格子"。用户描述的"边缘锯齿严重"与这个
+现象一致，而几何边缘（物体轮廓）在任何档位都不会被这条补丁影响——这是区分
+"纹理 aliasing"和"几何锯齿"的关键。
+
+顺带排除的两个噪音源：
+
+- `58-tu-no-force-sample-interp` 只在 `sampleShadingEnable` 成立时起作用，荒野之息不创建 MSAA 附件，不适用。
+- 分辨率缩放如果被设成 0.75x，会独立造成几何锯齿。它和 texfast 是两个来源，必须分开排。
+
+v6.1 把三件事拆开：`TU_Z_TEXMIP`（默认 0）、`TU_Z_LODBIAS`（默认 0）、总开关
+`TU_Z_TEXFAST`（默认 1 但两项都为空操作）。默认态采样器与上游逐 bit 相同。
+
+## 二、帧数：不是新回归，是继承下来的方向性错误
+
+查 `legacy-patches/03-tu-z-sysmem-only.patch` 与 `02-tu-default-prefer-sysmem.patch`：
+**v5.1 本身就强制 sysmem**，而且是两处：
+
+```c
+DEBUG_GET_ONCE_BOOL_OPTION(z_sysmem_only, "TU_Z_SYSMEM_ONLY", true)   /* 03 */
+algorithm algo = algorithm::PREFER_SYSMEM;                            /* 02 */
+```
+
+所以"v6.0 比 v5.1 慢"不能归因于 sysmem——两边都在强制。真正可复现的差异只有
+锯齿（上节）。但 sysmem 强制本身是荒野之息在这台机器上的**结构性**瓶颈：
+
+- `PREFER_SYSMEM` 在 `tu_autotune::get_optimal_mode()` 里命中的是 `early_return_mode`
+  分支，即**所有** render pass 提前返回 SYSMEM，不是"倾向"。
+- Duo 实际内存是 LPDDR4X、2×16-bit、约 17 GB/s；两块屏 120Hz 扫描输出再扣 1.58 GB/s。
+- sysmem 渲染意味着每帧颜色/深度的 bin 流量全部落到 DDR。荒野之息 overdraw 重，
+  这笔流量被放大。
+- 1 MiB GMEM 当然塞不下一整个 1080p pass，但分成多 bin 走片上内存，仍远快于把
+  同样多的字节搬去 DDR——**GMEM 的意义就是把 bin 内的读写留在片上**，bin 多不等于
+  白搬。
+
+v6.1 因此不再沿用这条路，而是把它换成"能用 GMEM 就用"：
+
+| 项 | v5.1 | v6.0 | v6.1 |
+|---|---|---|---|
+| autotune 默认算法 | `PREFER_SYSMEM`（提前返回） | `PREFER_SYSMEM`（提前返回） | 上游 `BANDWIDTH`（逐 pass 估算） |
+| 是否可关 | 可（`TU_Z_SYSMEM_ONLY=0`） | **不可**（编译期常量） | 可（`TU_AUTOTUNE_ALGO`） |
+| FD722 几何 | 1/16/15 | 1/16/15 | **2/32/16**（T30 / A722 / autotune 开启下验证） |
+| 走 GMEM 会不会崩 | 会（所以只能锁 sysmem） | 会（所以只能锁 sysmem） | 预期路径 |
+
+几何换成 2/32/16 不是"猜"，是 57 号补丁注释里本来就写着的另外一条路：
+MrPurple666 的 T30 在 A722 上用 `num_ccu=2 / tile_align_h=32 / hbb=16`，并且
+meta.json 明写 `uses tu_autotune GMEM/sysmem selection`——即同一套运行方式在
+A722 实机上跑通过。v5.1 之所以锁 1/16/15，是因为它选了"永远 sysmem"这条路，
+而那条路上这两个参数近乎惰性。
+
+## 三、顺带修掉的一个配置事故
+
+`17-wn-apply-perf-variant.py` 原来是：
+
+```python
+BUILD_VARIANT = os.environ.get("BUILD_VARIANT", "p2")
+if BUILD_VARIANT not in {"p", "p1", "p2"}:
+    BUILD_VARIANT = "p2"
+```
+
+构建脚本对每个变体都会 `export BUILD_VARIANT=<变体名>`，所以 `tzeden` / `tzqual` /
+`tzsys` / `tzvauzi` 全部不匹配，全部被静默当成 `p2`：
+
+- 关掉 KGSL governor、强制 turbo（长测会先热后被 thermal 降频）；
+- 把 `tu_autotune` 的带宽乘数从 11 改成 10。这一改把
+  `gmem_bandwidth = (gmem_bandwidth * 11 + total) / 10`（一个"让 GMEM 显得贵 10%"的
+  人为系数）变成了 `gmem_bandwidth += total / 10`（在 draw 循环里单调累加），
+  于是 GMEM 永远显得更贵，进一步倒向 sysmem；
+- `> 5` 的 drawcall 阈值改动因上游重构没匹配上（日志有记录），等于没生效。
+
+日志里能看到 `apply_perf_variant.py: done for BUILD_VARIANT=p2`，但它出现在
+`tzeden` 的补丁清单里，本身就是矛盾的——v6.1 起只有显式请求 `p/p1/p2` 才会动这两
+个子系统，governor 改为运行时变量 `TU_KGSL_GOVERNOR_OFF`（默认 1，与 v5.1 一致）。
+
+## 四、下一步的判据
+
+装 v6.1 后按这个顺序看，每一档都能定位到具体机制：
+
+1. 锯齿没了 → 上面第一节的结论成立，texfast 以后永久保持 `TU_Z_TEXMIP=0`。
+2. 帧数仍低于 v5.1，但 `TU_DEBUG=sysmem` 时反而回升 → GMEM 几何（2/32/16）在你机器上不对，回退几何而不是回退 sysmem。
+3. 帧数仍低，且 `sysmem`/`bandwidth` 两档差不多 → 瓶颈不在显存模式，接下来要看
+   `has_lpac = False` / `enable_tp_ubwc_flag_hint = False`（56 号为了对齐 blob 寄存器
+   值关掉的两个 GPUProps，UBWC hint 直接影响纹理取数压缩率，是荒野之息这种贴图密集
+   场景的合理怀疑对象），以及 CPU 侧（Eden 在 A7xx 上的命令录制开销）。
+4. 帧数高于 v5.1 但长测（>10 分钟）往下掉 → 把 `TU_KGSL_GOVERNOR_OFF` 改 0。

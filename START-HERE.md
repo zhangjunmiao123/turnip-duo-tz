@@ -6,6 +6,34 @@
 
 ---
 
+## v6.1 修的两个问题（荒野之息实测反馈）
+
+v6.0 的 `tzeden` 在塞尔达旷野之息上「帧数更低 + 边缘锯齿严重」。查完源码，两个症状的性质**不一样**，先说清楚：
+
+### 锯齿：确认是 v6.0 引入的，已经修掉
+
+32 号补丁除了加 LOD 偏置，还把 `miplinear` 设成 `false`（三线性 → 最近 mip）并把 `aniso` 归零。**v5.1 那条补丁只加 LOD 偏置，从不动这两项。** mip 之间直接跳变，远景草地/地面在运动时抖动发毛，观感就是"锯齿严重"——荒野之息满屏草地，最吃这个。
+
+v6.1 把它拆成两个变量：`TU_Z_TEXMIP`（默认 0 = 不动）和 `TU_Z_LODBIAS`（默认 0 = 不加偏置）。默认状态下采样器与上游**逐 bit 相同**。
+
+### 帧数：不是 v6.0 新引入的，是 v5.1 一直就有的设计，v6.1 换方向
+
+v5.1 其实**也是强制 sysmem**的——`TU_Z_SYSMEM_ONLY` 默认 true（`use_sysmem_rendering()` 里直接 return true），外加 tu_autotune 的默认算法写成 `PREFER_SYSMEM`。v6.0 的 36 号只是把这个做法原封不动搬进了 autotune（`PREFER_SYSMEM` 在 `get_optimal_mode()` 里是 `early_return_mode` 提前返回，等于所有 render pass 一律走系统内存）。
+
+问题在于：**这条路在带宽只有 ~17 GB/s 的 Duo 上方向是错的**。把整帧颜色/深度全压到 DDR，双屏 120Hz 还要再扣 1.58 GB/s，荒野之息这种高 overdraw 场景最吃亏。（TurnipZ 在 865 上走这条路能赢，是因为 865 的 GMEM 和带宽是另一个量级。）
+
+v6.1 的做法不是"回退"，而是**第一次真正把 GMEM 路径打开**：
+
+1. 36 号停用 → 显存模式交回上游 `BANDWIDTH`（逐 render pass 按估算带宽选 GMEM / sysmem）；
+2. 但 1/16/15 的几何只在强制 sysmem 下验证过，autotune 一走 GMEM 就会 `UBWC corruption (purple/black lines) and a GPU hang`（57 号注释原文）。所以 57 号改成 **2/32/16** —— 这是 MrPurple666 的 T30 在 **A722 实机 + 自动调优开启**下验证过的组合（T30 的 meta.json 明写 `uses tu_autotune GMEM/sysmem selection`）；
+3. 17 号脚本原来在 `BUILD_VARIANT` 不认识时会**静默回退成 `p2`**，于是每个变体都被无提示地关掉 KGSL governor、强制 turbo，还顺手把 autotune 带宽乘数 11→10（那一改把 EMA 变成了累加，GMEM 永远显得更贵）。v6.1 起只有显式请求 `p/p1/p2` 才生效，governor 单独做成运行时变量 `TU_KGSL_GOVERNOR_OFF`（默认 1 = v5.1 行为）。
+
+> 如果 2/32/16 在你的机器上出紫黑横条（说明这套几何不成立），**先别改补丁**：在 Eden 环境变量里加 `TU_DEBUG=sysmem` 就能绕开 GMEM，继续用这个包，然后把现象告诉我。
+>
+> 另外，**如果第 7 步把分辨率设成了 0.75x，那也是锯齿的第二个来源**。荒野之息手持原生 720p，降到 540p 再拉到 1080p，几何边缘必然更糟。v6.1 的基线一律用 **1x**。
+
+---
+
 ## 第 0 步：先确认四件事（5 分钟）
 
 | 检查项 | 怎么查 | 不满足怎么办 |
@@ -95,7 +123,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 | 参数 | 填什么 | 说明 |
 |---|---|---|
-| `version` | `6.0` | 只影响 zip 名，别填中文 |
+| `version` | `6.1` | 只影响 zip 名，别填中文 |
 | `variants` | **`tzeden`** | ← 第一次只填这一个 |
 | `mesa_ref` | **保持默认不动** | `74920caa...913b`，动了补丁锚点可能全部失效 |
 | `cpu_flags` | `-march=armv8.2-a` | 保持默认。这是唯一零画质风险的改动，别清空 |
@@ -107,7 +135,7 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 点进正在跑的那次运行，展开 `Build` 步骤的日志。**正常**的日志会长这样：
 
 ```
-==== Building v6.0-tzeden ====
+==== Building v6.1-tzeden ====
 [56-fd722-blob.py] applied ...
 [57-fd722-duo.py] applied ...
 ```
@@ -131,17 +159,17 @@ git remote set-url origin https://github.com/真正的用户名/turnip-duo-tz.gi
 
 ## 第 4 步：下载并解开（注意是两层压缩）
 
-1. 运行详情页最下方 **Artifacts** → 点 `turnip-duo-tz-6.0` 下载
+1. 运行详情页最下方 **Artifacts** → 点 `turnip-duo-tz-6.1` 下载
 2. 下载到的是一个 zip，**先解压这一次**，里面是：
 
 ```
-Turnip-Duo-TZ-v6.0-tzeden.zip     ← 这个才是驱动包
+Turnip-Duo-TZ-v6.1-tzeden.zip     ← 这个才是驱动包
 patches-tzeden.txt                ← 补丁日志（和 Summary 里一样）
 build-info.env                    ← Mesa 提交号、版本
 build-tz.log                      ← 完整编译日志
 ```
 
-3. **`Turnip-Duo-TZ-v6.0-tzeden.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
+3. **`Turnip-Duo-TZ-v6.1-tzeden.zip` 不要再解压**。Eden 认的就是这个 zip 本身。
 
 ---
 
@@ -153,8 +181,8 @@ build-tz.log                      ← 完整编译日志
 
 1. 打开 **Eden**
 2. **设置 → 图形（Graphics）→ GPU 驱动（GPU driver）**
-3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.0-tzeden.zip`
-4. 列表里应该出现一项 **`Turnip Duo TZ v6.0-tzeden`**
+3. 点 **安装（Install）**，文件选择器里选 `Turnip-Duo-TZ-v6.1-tzeden.zip`
+4. 列表里应该出现一项 **`Turnip Duo TZ v6.1-tzeden`**
 5. 选中它（选中即生效，会提示重启模拟器/游戏）
 
 **不需要 root，不动系统驱动。** 想回退就在同一个界面切回"系统驱动"，或删掉这一项。
@@ -165,7 +193,7 @@ build-tz.log                      ← 完整编译日志
 
 ### 方式 A：看 Eden 里的驱动名（最快）
 
-设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.0-tzeden`。这是"选中了"，但不代表"加载成功"。
+设置 → 图形 → GPU 驱动，当前选中的那一项应该显示 `Turnip Duo TZ v6.1-tzeden`。这是"选中了"，但不代表"加载成功"。
 
 ### 方式 B：看 logcat（最可靠）
 
@@ -181,7 +209,7 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722"
 
 | 看到什么 | 说明 |
 |---|---|
-| `default env: TU_Z_TEXFAST=1` 之类 | ✅ 我们的驱动被加载了，内置默认值生效 |
+| `default env: TU_Z_TEXFAST=1`、`default env: TU_AUTOTUNE_ALGO=bandwidth` 之类 | ✅ 我们的驱动被加载了，内置默认值生效 |
 | 只有 `Adreno (TM) 722`，没有 `default env` | ❌ 加载的是系统驱动或别的构建，检查第 5 步是不是装到了别的模拟器 |
 | 什么都没有 | 可能是 adb 没连上，先 `adb devices` 确认 |
 
@@ -199,7 +227,7 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722"
 
 | 顺序 | 设置项 | 改成 | 为什么 |
 |---|---|---|---|
-| 1 | 图形 → **分辨率（Resolution）** | **0.75x** | 这台机器内存带宽只有约 17 GB/s（LPDDR4X），填充率是最贵的开销。5.5 寸屏上 0.75x 几乎看不出 |
+| 1 | 图形 → **分辨率（Resolution）** | **1x**（基线必须 1x） | 荒野之息手持模式原生就是 720p，再降 0.75x 等于 540p 拉伸到 1080p，几何边缘会明显更糟。先把 1x 当基线，测完驱动再考虑降分辨率换帧数 |
 | 2 | 图形 → **各向异性过滤（Anisotropic Filtering）** | **关闭** | Eden 默认本来就关，确认一下别被打开 |
 | 3 | 图形 → **ASTC 解码（ASTC Decoding）** | **GPU** | Switch 贴图以 ASTC 为主，Adreno 原生支持 |
 | 4 | 图形 → **异步着色器 / 管线缓存** | **开启** | ⚠️ **换驱动后必须清一次管线缓存重建**，否则第一次进游戏长时间卡顿会被误判成"驱动慢" |
@@ -215,9 +243,11 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722"
 
 这是现在信息量最大的一组实验，但**有一条硬约束，先看这一条**：
 
-> ⚠️ **`tzeden` 包是 `num_ccu=1 / tile_align_h=16 / hbb=15` 的几何配置，这套值只在“强制 sysmem”下验证过。仓库作者在源码注释里写明：这套 1/16/15 一旦走 GMEM，会出现紫黑色横条（UBWC 损坏）并挂死 GPU。**
+> ⚠️ **v6.1 起 `tzeden` 的几何是 `num_ccu=2 / tile_align_h=32 / hbb=16`（T30 在 A722 实机 + autotune 开启下验证过的那套），所以 autotune 选 GMEM 是预期行为。**
 >
-> 所以**不要给 `tzeden` 设 `TU_DEBUG=gmem`**。想试 gmem，必须先换 `tzvauzi`（2/32/16，即 T30 那套在 GMEM 下验证过的配置）。
+> 但仍然**不建议手动设 `TU_DEBUG=gmem`**：那是把所有 render pass 无条件塞进 1 MiB 片上 GMEM，连本该走 sysmem 的大 pass 也塞，纯粹是自找多 bin 来回搬。要让 GMEM 用得多一点，用 `TU_AUTOTUNE_FLAGS=big_gmem`（≥10 次绘制的 pass 进 GMEM），让算法自己去判断。
+>
+> 反过来，**如果画面出现紫黑横条/横向条带**，说明 2/32/16 在你的机器上不成立——立刻加 `TU_DEBUG=sysmem` 绕开 GMEM，并把现象告诉我。
 
 社区口径本身也**互相矛盾**：Vauzi-17（710/720/722 驱动的作者）推荐 `sysmem` 作默认，而 MrPurple 在 Eden 的 PR 里说 A710/720 必须 `gmem` 才正常。两者对应的却不是同一套几何参数——这大概就是矛盾的原因。A722 没人公开测过。
 
@@ -227,20 +257,38 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 
 **如果找不到这个入口**（版本太老），跳过 8.2，直接用 `tzsys` 包代替——那个包把 `TU_DEBUG=sysmem` 写死在驱动里了。
 
-### 8.2 在 `tzeden` 上只跑两轮
+### 8.2 在 `tzeden` 上跑显存模式三档（不重编，30 秒一档）
 
-| 轮次 | 设什么 | 怎么设 |
+v6.1 起显存模式是**运行时**决定的，变量叫 `TU_AUTOTUNE_ALGO`：
+
+| 轮次 | Eden 驱动设置里写 | 含义 |
 |---|---|---|
-| A | **留空**（不设 `TU_DEBUG`） | 删掉这一行，或清空。内置默认已是 `PREFER_SYSMEM`（36 号补丁），等于 autotune 不往 GMEM 走 |
-| C | `TU_DEBUG=sysmem` | 强制系统内存渲染，等于把 autotune 彻底绕开 |
+| **基线** | 什么都不加 | 内置默认 `bandwidth`，上游算法：按估算带宽逐个 render pass 选 GMEM / sysmem |
+| B | `TU_AUTOTUNE_ALGO=profiled` | 用 GPU 时间戳实测数据来学，通常更准，但有几十帧的学习期 |
+| C | `TU_DEBUG=sysmem` | 强制系统内存，等于 **v6.0 的行为**。跑这一档是为了亲眼确认"帧数低是不是它害的" |
+
+> v6.0 里 36 号补丁把 `PREFER_SYSMEM` 钉死在编译期，等于默认就是上面 C 那一档，而且关不掉。v6.1 停用了它——想要 C 的效果，写一行变量就行。
 
 **不设 `gmem` 这一档**，原因见上面那条硬约束。
 
-### 8.3 想试 GMEM 就先换包
+### 8.2b 画质对照：确认锯齿的来源（10 分钟，不用重编）
 
-`variants` 填 `tzvauzi` 单独编一次，装上它之后才允许试 `TU_DEBUG=gmem`。因为 `tzvauzi` 的 2/32/16 是在 GMEM 下验证过的组合。
+按这个顺序在 `tzeden` 上逐档加变量，每次都回到同一个存档点、看同一片远景草地：
 
-判断标准很简单：**如果 `tzvauzi` + `gmem` 出现紫黑横条，说明 Duo 的 1/16/15 才是对的；如果画面正常且更快，那 v5.1 一直以来的配置就是配小了。**
+| 档 | 加什么 | 应该看到 |
+|---|---|---|
+| ① | 什么都不加 | **最锐利**的远景。如果这一档还是"锯齿严重"，那锯齿不是驱动造成的，是 720p 拉伸到 1080p 的固有结果（荒野之息本身没有抗锯齿） |
+| ② | `TU_Z_LODBIAS=30` | 远景略糊一点，但边缘抖动没有明显恶化 |
+| ③ | `TU_Z_TEXMIP=1` | **抖动/发毛明显回来**——这就是 v6.0 的锯齿来源。确认过这一档，以后就别开了 |
+
+如果 ① 就已经比之前用 v6.0 时好很多，那问题已经解决，②③ 不用再试。
+
+### 8.3 出横条就往回退一格
+
+v6.1 的几何已经是 T30 那套（2/32/16），正常情况下不需要换包。只有一种情况要动：
+
+- **看到紫黑横条 / 横向条带** → 这不是分辨率问题，是 GMEM 里的 UBWC 几何不成立。Eden 环境变量里加 `TU_DEBUG=sysmem`，立刻恢复；确认是这个问题我再把几何改回 1/16/15 重编。
+- **想验证"1 CCU 到底差多少"** → 单独编 `tzccu2`（它把几何钉回 2/32，与 base 相同，其实已经没差异了）；真要测 1/16/15 得改 `57-fd722-duo.py` 里的 `EXPECT`，**只在 sysmem 下测**。
 
 ### 8.4 每轮怎么测
 
@@ -262,12 +310,13 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 **先别急着编。** 等第 8 步出结论再说：
 
 - 如果 A/B/C 里某一档明显赢，**先只玩这一档**，够用了。
-- 如果三档都差不多、你想知道 texfast（我们的驱动相对原版到底改了多少），再跑一次 workflow，`variants` 填 `tzqual tzvauzi tzsys`。
-  - `tzqual` = 关掉 texfast，量"纹理提速"的代价
-  - `tzvauzi` = 换一套外部逆向的 A722 几何参数，**有花屏风险，最后一个测**
-  - `tzsys` = 把 sysmem 写死的兜底版
+- 如果三档都差不多、你想知道 texfast（我们的驱动相对原版到底改了多少），再跑一次 workflow，`variants` 填 `tzfast tzvauzi tzsys`。
+  - `tzfast` = texfast 三件套全开（关各向异性 + mip 取最近 + LOD +0.45），量"省纹理带宽"到底值多少帧，画质代价一眼可见
+  - `tzqual` = 与 `tzeden` 同画质基线、只是不带 texfast 补丁的对照包（想严格验证补丁本身有没有开销时用）
+  - `tzvauzi` = 换成外部那套完整的 A722 寄存器表（几何同为 2/32/16，差异在 magic regs）
+  - `tzsys` = 把 `TU_DEBUG=sysmem` 写死的兜底版（Eden 里设不了环境变量时用）
 
-编完后的产物名：`Turnip-Duo-TZ-v6.0-tzqual.zip` 等，装法同第 5 步，但**一次只装一个、测完删掉再装下一个**，否则你分不清是哪个在起作用。
+编完后的产物名：`Turnip-Duo-TZ-v6.1-tzqual.zip` 等，装法同第 5 步，但**一次只装一个、测完删掉再装下一个**，否则你分不清是哪个在起作用。
 
 ---
 
@@ -291,8 +340,10 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 | Summary 里 `no-change` | 补丁锚点对不上上游源码 | 把截图发我，我改锚点 |
 | 装完进游戏黑屏 | 该变体参数不适合 | Eden 里切回系统驱动，报告是哪个包 |
 | 整屏红蓝互换 | `TU_Z_BGRA_SWAP` 不成立 | Eden 环境变量设 `TU_Z_BGRA_SWAP=0` |
-| 固定周期横向条带 | `tile_align_h` / `highest_bank_bit` 配错 | 只会在 `tzvauzi` 上出现，换回 `tzeden` |
+| 固定周期横向条带 | `tile_align_h` / `highest_bank_bit` 配错（GMEM 几何不成立） | Eden 环境变量加 `TU_DEBUG=sysmem` 先恢复；再告诉我，我改回 1/16/15 重编 |
 | 第一次进游戏卡很久 | 管线缓存要重建 | 正常，第二次进就快；别误判成驱动慢 |
+| **帧数比 v6.0 高但比系统驱动低** | 荒野之息本身在 Eden 上就是 CPU + 带宽双瓶颈 | 先看第 8 步的显存模式三档，再考虑降分辨率；别指望驱动把 720p 的 Switch 游戏拉到 60fps |
+| **画面还是"锯齿严重"** | 先确认分辨率是 1x；再确认没开 `TU_Z_TEXMIP=1` | 两个都排除了，那就是 720p 拉 1080p 的固有结果，只能靠 Eden 提高分辨率（吃性能）换画质 |
 
 ---
 
@@ -301,4 +352,4 @@ Eden → 设置 → 图形 → GPU 驱动 附近，通常在选中自定义驱�
 - **Actions 里另外 4 个 workflow**：`Build Turnip (Adreno 722)`、`Turnip Duo v7.0`、`Turnip Duo v3.1`、`Turnip A722 bisect builds`。它们都是上游遗留、手动触发，其中 `Build Turnip (Adreno 722)` 引用的两个 stable 补丁文件在本仓库已移到 `legacy-patches/`，跑了会直接报错。你只需要 `Build Turnip Duo TZ`。
 - **别同时装多个驱动包**，Eden 只用一个，装了也分不清。
 - **别在测驱动的同时改分辨率**——第 7 步定死它就是为了这个。
-- **别把 `tzvauzi` 当第一个包测**，它有花屏风险，先建立基线。
+- **先只跑 `tzeden`**，把基线立起来；`tzvauzi` 是寄存器表的对照包，等基线稳了再碰。

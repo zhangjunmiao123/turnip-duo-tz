@@ -16,9 +16,18 @@ import sys
 KGSL_FILE = "src/freedreno/vulkan/tu_knl_kgsl.cc"
 AUTOTUNE_FILE = "src/freedreno/vulkan/tu_autotune.cc"
 
-BUILD_VARIANT = os.environ.get("BUILD_VARIANT", "p2")
+BUILD_VARIANT = os.environ.get("BUILD_VARIANT", "")
 if BUILD_VARIANT not in {"p", "p1", "p2"}:
-    BUILD_VARIANT = "p2"
+    # v6.0 的坑：这里原来是 `if BUILD_VARIANT not in {...}: BUILD_VARIANT = "p2"`，
+    # 于是 tzeden / tzqual / tzsys / tzvauzi 全部静默落进了 p2 分支——
+    # 每个变体都被关掉了 KGSL governor、强制 turbo，还顺手把 tu_autotune 的
+    # 带宽乘数从 11 改成 10（那一改让 gmem_bandwidth 变成累加，GMEM 永远显得
+    # 更贵 → 又一路倒向 sysmem）。这不是"性能档"，是配置事故。
+    # v6.1 起：只有显式请求 p / p1 / p2 才动这两个子系统，其余变体保持上游原样。
+    print(f"apply_perf_variant.py: BUILD_VARIANT={BUILD_VARIANT or '(unset)'} "
+          f"is not a perf variant (p/p1/p2); leaving KGSL governor and "
+          f"tu_autotune untouched")
+    sys.exit(0)
 
 
 def replace_once(content: str, old: str, new: str, label: str) -> tuple[str, bool]:

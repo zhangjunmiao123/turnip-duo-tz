@@ -1,1 +1,5 @@
-Eden 专用调校：texfast（mip 取最近，真正省纹理带宽）+ BGRA 实色交换 + LRZ rescue，LOD 收到 +0.30；不锁 TU_DEBUG，显存模式交给 Eden 菜单现场切
+v6.1 复位版（主力）：基准画质等同于上游，所有省带宽的开关都留到运行时，默认全不开
+- autotune 回上游 BANDWIDTH（停用 36 号的全局 PREFER_SYSMEM），显存模式逐个 render pass 自己算
+- 17 号脚本不再回退成 p2；KGSL governor 独立成 TU_KGSL_GOVERNOR_OFF（默认 1 = v5.1 行为）
+- texfast 拆成 TU_Z_TEXMIP / TU_Z_LODBIAS，默认 0 = 三线性不损（v6.0 的 mip 取最近就是锯齿来源）
+- 保留：FD722 设备条目、UBWC/压缩 swapchain 保护、aimapper gralloc、subpass fence、LRZ rescue、BGRA 实色交换

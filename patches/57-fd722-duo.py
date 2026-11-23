@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""FD722 (Retroid Pocket Duo, chip_id 0x43020100): pin the known-good GMEM config.
+"""FD722 (Retroid Pocket Duo, chip_id 0x43020100): pin the GMEM-capable config.
 
-The Duo's 60 FPS docked result comes from upstream's own FD722 values, so this
-script changes nothing today - it locks them in:
+v6.0 用的是 num_ccu=1 / tile_align_h=16 / hbb=15，注释自己写着「只在强制 sysmem
+的构建里验证过」。v6.1 把自动调优（tu_autotune）放开了，GMEM 会真的被用上，
+那 1/16/15 就不再是惰性参数，而是会算错的 bin 几何。
 
-  num_ccu          1    rewritten (device value; T30's 2/32 only suits GMEM)
-  tile_align_h    16    rewritten
+所以 v6.1 改用 MrPurple666 T30 在 **A722 实机 + 自动调优开启** 下验证过的配置：
+num_ccu=2 / tile_align_h=32 / highest_bank_bit=16（T30 的 meta.json 也写明它
+"uses tu_autotune GMEM/sysmem selection"，即同一套运行方式）。
+
+  num_ccu          2    rewritten (T30 / A722, GMEM-capable)
+  tile_align_h    32    rewritten
   cs_shared_mem_size
                    32 KiB  rewritten. 18-wn-a8xx-shared-mem.py raises this to
                         64 KiB on every device entry, FD722 included, and it
@@ -16,12 +21,12 @@ script changes nothing today - it locks them in:
                         compute shader decoding the Mario Kart 8 HUD item
                         texture overflow it, so the icon came out blank while
                         3D geometry rendered fine.
-  highest_bank_bit 15   written out; it is A6xxGPUInfo's default today
-                        (freedreno_dev_info.py), and 15 is the Duo's device-tree
-                        value, read from
-                        /proc/device-tree/soc/qcom,kgsl-3d0@3d00000 (hbb = 15,
-                        cross-checked against the kernel's RB_NC_MODE_CNTL
-                        0x814, where bits 2:1 = hbb - 13).
+  highest_bank_bit 16   rewritten; T30's A722 value. v6.0 用的是 15（Duo 设备树
+                        里读到的值），但那只在强制 sysmem 下验证过。
+
+如果 2/32/16 在实机上出紫黑横条/横向条带（说明这套几何在你的机器上不成立），
+先不要改补丁——在 Eden 的 Turnip 环境变量里加 TU_DEBUG=sysmem 就能绕开 GMEM，
+继续用这套包。要长期回到 1/16/15，把 EXPECT 改回 (1, 16)、HBB 改回 15 重编。
 
 Unlike the other patches here this one EXITS NON-ZERO if upstream has moved
 num_ccu or tile_align_h, instead of warning and continuing. That is the point
@@ -30,13 +35,9 @@ CCU offsets inside GMEM (src/freedreno/common/fd6_gmem_cache.h), and the Duo has
 only 1 MiB of GMEM, so a changed value must be looked at by a human before it
 ships. With MESA_REF pinned to a commit it can never fire.
 
-To try the A720-style 2 CCU / 32 tile config instead, set EXPECT below to
-(2, 32) and flip ENFORCE to False - the script then rewrites the block.
-
 Numbered 57 so it runs after 56-fd722-blob.py, which replaces the whole FD722
-add_gpus block with its own text. 56 happens to set the same four values from
-its blob traces, so this script normally reports "already applied" and exists to
-fail the build if 56 (or anything else) ever moves them.
+add_gpus block with its own text (and writes 1/16/15 from blob traces); this
+script then rewrites those three fields.
 
 Run from the Mesa source root.
 """
@@ -46,17 +47,16 @@ import sys
 NAME = "57-fd722-duo.py"
 
 DEVICES_PY = "src/freedreno/common/freedreno_devices.py"
-# v5.4: MrPurple T30's GMEM configuration, which renders the Mario Kart 8 HUD
-# icons correctly with autotune enabled (its own meta.json: "num_ccu=2,
-# tile_align_h=32, highest_bank_bit=16 ... uses tu_autotune GMEM/sysmem
-# selection"). num_ccu and tile_align_h only really matter once passes render
-# in GMEM; our 1/16/15 set was only ever validated in a forced-sysmem build,
-# where they are close to inert. With Turnip-Z off, autotune turns GMEM on and
-# 1/16/15 produced UBWC corruption (purple/black lines) and a GPU hang.
-EXPECT = (1, 16)        # (num_ccu, tile_align_h)
-HBB = 15
+# v6.1: MrPurple666 T30 的 A722 配置。T30 自己的 meta.json 写明
+# "num_ccu=2, tile_align_h=32, highest_bank_bit=16 ... uses tu_autotune
+# GMEM/sysmem selection"，也就是同一套运行方式（自动调优 + 允许 GMEM）在
+# A722 实机上验证过。v6.0 的 1/16/15 只验证过强制 sysmem 的情况——那种情况下
+# 这两个参数几乎是惰性的；一旦 autotune 真的走 GMEM，1/16/15 会产出 UBWC
+# 损坏（紫黑横条）并挂死 GPU（v6.0 的注释原文）。
+EXPECT = (2, 32)        # (num_ccu, tile_align_h)
+HBB = 16
 CS_SHARED_MEM_KIB = 32   # OEM blob limit; matches plain Mesa, which T30 is
-ENFORCE = False         # 56 writes the block first, so rewrite rather than assert
+ENFORCE = False         # 56 先写自己的值，这里负责改写成 T30 的几何
 
 SUMMARY = (f"FD722 num_ccu={EXPECT[0]}, tile_align_h={EXPECT[1]}, "
            f"highest_bank_bit={HBB}, cs_shared_mem_size={CS_SHARED_MEM_KIB} KiB")

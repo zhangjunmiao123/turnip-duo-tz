@@ -48,12 +48,29 @@
 
 | 包 | 定位 | 什么时候用 |
 |---|---|---|
-| **`tzeden`** | **主力** | 日常玩 Eden 就用它。texfast（mip 取最近）+ BGRA 实色交换 + LRZ rescue，LOD 偏置收到 +0.30 |
-| `tzqual` | 画质对照 | 觉得远景糊、想看 texfast 到底牺牲了多少画质时 |
-| `tzvauzi` | 几何对照 | 想验 v5.1 的 `num_ccu=1 / tile_align_h=16` 是不是配小了 |
-| `tzsys` | 兜底 | Eden 里设不了环境变量、又必须强制 sysmem 时 |
+| **`tzeden`** | **主力（v6.1 复位版）** | 日常玩 Eden 就用它。默认画质等同于上游（三线性不损、不加 LOD 偏置、autotune 走上游 `BANDWIDTH`），所有省带宽的开关都留到运行时 |
+| `tzfast` | 帧数对照 | texfast 三件套全开（关各向异性 + mip 取最近 + LOD +0.45）。用来量"省纹理带宽到底值多少帧"，画质代价一眼可见 |
+| `tzqual` | 补丁对照 | 和 `tzeden` 画质相同、只是不带 texfast 那套补丁，用于严格验证补丁本身有没有额外开销 |
+| `tzvauzi` | 寄存器表对照 | 换成外部那套完整的 A722 条目（几何同为 2/32/16，差异在 magic regs） |
+| `tzsys` | 兜底 | Eden 里设不了环境变量、又必须强制 sysmem 时用 |
 
-`tzeden` 和 `tzfast` 的区别只有两点：LOD 偏置 30 vs 45，以及 **`tzeden` 不写死 `TU_DEBUG`**。后者是关键——不写死，你才能在 Eden 菜单里现场切显存模式，不用重刷驱动。
+### v6.1 相对 v6.0 改了什么（荒野之息实测反馈后）
+
+v6.0 在荒野之息上出现「帧数更低 + 边缘锯齿严重」。两个症状的**性质不一样**：
+
+**一、锯齿：确实是 v6.0 引入的，已修。**
+
+32 号把 `miplinear` 设 `false`（三线性→最近 mip）+ `aniso=0`，而 **v5.1 那条补丁只加 LOD 偏置，从不动这两项**。mip 直接跳变 = 远景草地/地面抖动发毛。v6.1 拆成 `TU_Z_TEXMIP`（默认 0 不动）与 `TU_Z_LODBIAS`（默认 0 不加偏置），默认与上游逐 bit 相同。
+
+**二、帧数：不是 v6.0 新引入的，是 v5.1 就有的设计，v6.1 换方向。**
+
+v5.1 也是强制 sysmem（`TU_Z_SYSMEM_ONLY` 默认 true + autotune 默认 `PREFER_SYSMEM`）。这条路在 865 上能赢，在带宽只有 ~17 GB/s、还要被双屏吃掉 1.58 GB/s 的 Duo 上方向是错的。v6.1 第一次把 GMEM 路径真正打开：
+
+1. 36 号 `.off`，autotune 回上游 `BANDWIDTH`（逐 pass 按估算带宽选）；
+2. FD722 几何从 `1/16/15` 改成 `2/32/16` —— 1/16/15 只在强制 sysmem 下验证过，一走 GMEM 就 `UBWC corruption + GPU hang`；2/32/16 是 T30 在 A722 实机 + autotune 开启下验证过的（`tzvauzi` 用的也是这套几何）；
+3. 17 号不再在变体名不认识时静默回退 p2；KGSL governor 独立成 `TU_KGSL_GOVERNOR_OFF`（默认 1 = v5.1 行为）。
+
+`tzeden` 和 `tzfast` 的区别现在只有 texfast 三个变量；**`tzeden` 不写死 `TU_DEBUG`**，显存模式在 Eden 菜单里现场切，不用重刷驱动。
 
 > 关于 Eden 自带的驱动下载：Eden 确实能自动匹配并下载驱动，但拉来的是通用 T30/上游构建，**没有 A722 的 `num_ccu` / `tile_align_h` 设备条目调校**，所以手装这版才有意义。
 
@@ -65,11 +82,11 @@
 
 | 优先 | 设置项（Eden → 设置 → 图形/系统） | 建议值 | 为什么 |
 |---|---|---|---|
-| ★★★ | **分辨率缩放** | 先 `0.75x`，不够再 `1x` | 直接按平方减填充率。5.5" 屏上 0.75x 和 1x 的差别远小于台式显示器；在这台带宽只有 17 GB/s 的机器上，这是**单项收益最大的一档** |
-| ★★★ | **Turnip 环境变量 → `TU_DEBUG`** | 留空 → `sysmem`（`gmem` 只在 `tzvauzi` 上试） | 决定渲染走片上 GMEM 还是系统内存。A710/720 上有"必须设 gmem 才正常"的报告，但那些是 2/32 几何；本方案默认包是 1/16/15，配 `gmem` 会花屏 → 见第 4 节警告 |
-| ★★☆ | **各向异性过滤** | `关闭` | 和 `tzeden` 的 texfast 呼应。Eden 默认本来就关，确认一下别被打开 |
+| ★★★ | **分辨率缩放** | **基线一律 `1x`**；测完驱动再考虑 `0.75x` | 荒野之息手持原生就是 720p，0.75x 等于 540p 拉伸到 1080p，几何边缘会明显更糟。它确实是单项收益最大的一档，但必须放在**画质基线确定之后**再动，否则"锯齿变严重"无法归因 |
+| ★★★ | **Turnip 环境变量 → `TU_AUTOTUNE_ALGO`** | 留空（= `bandwidth`）→ `profiled` → 配 `TU_DEBUG=sysmem` 对照 | 决定显存模式怎么选。留空是上游按估算带宽逐 pass 选；`sysmem` 那档等于 v6.0 的旧行为 |
+| ★★☆ | **各向异性过滤** | `关闭` | Eden 默认就关，确认别被打开。开着会多采纹理，在 17 GB/s 上不划算 |
 | ★★☆ | **系统 → 显示刷新率** | Eden 内锁 60Hz | 见下方"双屏带宽账"。120Hz 下 40fps 的游戏反而会出现帧节奏不均 |
-| ★☆☆ | **强制最大频率 / 性能模式** | 开 | 有风扇，能扛；但要留意机身温度和掉电 |
+| ★☆☆ | **强制最大频率 / 性能模式** | 开（长测掉帧就关掉驱动侧的 `TU_KGSL_GOVERNOR_OFF`） | 有风扇，能扛；但持续满频会让机身先热、热到阈值被 thermal 降频。**短测 2 分钟好看，长测 10 分钟可能更差** |
 | ★☆☆ | **ASTC 解码** | GPU | Switch 贴图以 ASTC 为主，Adreno 原生支持；走 CPU 会额外占 CPU 和内存带宽 |
 | ★☆☆ | **异步着色器 / 管线缓存** | 开 | 换驱动后**必须重新编译**一次管线缓存，否则第一次进游戏会长时间卡顿，容易被误判成驱动慢 |
 
@@ -106,12 +123,16 @@ Eden 里设的值  >  Android 属性（debug.mesa.*）  >  驱动内置默认（
 
 | 变量 | 取值 | 作用 / 什么时候试 |
 |---|---|---|
-| `TU_DEBUG` | `gmem` | 强制片上 GMEM 渲染。省带宽，但如果 tile 塞不下会来回搬，反而更慢。**⚠️ 只能配 `tzvauzi`（2/32/16）用；配 `tzeden`/`tzqual`/`tzsys`（1/16/15）会出紫黑横条并挂死 GPU**——见下方警告 |
-| `TU_DEBUG` | `sysmem` | 强制系统内存渲染。Vauzi-17（710/720/722 驱动的作者）自己推荐这个作**默认**；画面撕裂/贴图错乱时也优先试它 |
+| `TU_AUTOTUNE_ALGO` | `bandwidth`（默认）/ `profiled` / `profiled_imm` / `prefer_sysmem` / `prefer_gmem` | **v6.1 起显存模式的主开关**。`bandwidth` = 上游按估算带宽逐 pass 选；`profiled` 用时间戳实测来学；`prefer_sysmem` 等于 v6.0 的旧行为（全部走系统内存，带宽吃紧时明显更慢）；`prefer_gmem` 全走片上 GMEM |
+| `TU_AUTOTUNE_FLAGS` | `big_gmem` / `tune_small` / `preempt_optimize` | `big_gmem` = 绘图调用 ≥10 次的 render pass 一律进 GMEM。想让画面更省带宽可以试，但 1 MiB GMEM 下可能来回搬 |
+| `TU_DEBUG` | `sysmem` | 硬强制系统内存，绕开 autotune。做对照用；**别和 `prefer_gmem`/`big_gmem` 混着理解**，它优先级最高 |
+| `TU_DEBUG` | `gmem` | 强制片上 GMEM。**不推荐**：会把所有 pass 无条件塞进 1 MiB GMEM（本该走 sysmem 的大 pass 也塞）。想让 GMEM 用得多一点用 `TU_AUTOTUNE_FLAGS=big_gmem` |
 | `TU_DEBUG` | `nolrz` | LRZ 导致深度瑕疵（阴影错位、物体穿透）时关掉 |
-| `TU_Z_TEXFAST` | `0` / `1` | 关/开纹理提速。想单独测 texfast 的收益就靠它，不用换包 |
-| `TU_Z_LODBIAS` | `15` / `30` / `45` | 单位 1/100。数字越大越省带宽、远景越糊。`tzeden` 默认 30 |
-| `TU_Z_BGRA_SWAP` | `0` / `1` | 出颜色错乱（红蓝互换、整屏偏色）时先关这个 |
+| `TU_KGSL_GOVERNOR_OFF` | `1`（默认）/ `0` | 关掉 KGSL governor，GPU 钉最高频。短测好看，长测（>10 分钟）如果帧数反而往下掉，改 `0` 交回系统调频 |
+| `TU_Z_TEXFAST` | `1`（默认）/ `0` | texfast 总开关。`0` = 完全回到上游采样行为 |
+| `TU_Z_TEXMIP` | `0`（默认）/ `1` | **画质杀手档**。`1` = 关各向异性 + mip 取最近（v6.0 的行为），省带宽但远景会 mip 跳变、边缘发毛 |
+| `TU_Z_LODBIAS` | `0`（默认）/ `20` / `30` / `45` | 额外 LOD 偏置，单位 1/100。`0` = 不加偏置；数字越大越省带宽、远景越糊 |
+| `TU_Z_BGRA_SWAP` | `1`（默认）/ `0` | 后缓冲 BGRA 实色交换。出颜色错乱（红蓝互换、整屏偏色）时先关这个 |
 | `FD_DEV_FEATURES` | `has_8bpp_ubwc=0` | UBWC 相关花屏时试。注意：`num_ccu`、`tile_align_h`、`highest_bank_bit`、`cs_shared_mem_size` **不能**用它改，那几个只能重编 |
 
 > 只写 `TU_DEBUG` 一个名字、不写 `=`，在部分版本里会被当成空值。按上表写完整形式更稳。
@@ -123,21 +144,24 @@ Eden 里设的值  >  Android 属性（debug.mesa.*）  >  驱动内置默认（
 
 **铁律：一次只改一项。** 每轮记录四个数：
 
-| 场景 | 驱动 | TU_DEBUG | 分辨率 | 平均 fps | 1% low | 画面异常 | 备注 |
+| 场景 | 驱动 | 显存模式 | 分辨率 | 平均 fps | 1% low | 画面异常 | 备注 |
 |---|---|---|---|---|---|---|---|
 | 基线 | v5.1（现装） | 未设 | 1x | | | | |
-| ① | `tzeden` | 未设 | 1x | | | | 内置默认已是 PREFER_SYSMEM |
-| ② | `tzeden` | `sysmem` | 1x | | | | 绕开 autotune |
-| ③ | `tzvauzi` | `gmem` | 1x | | | | 唯一允许配 gmem 的几何配置 |
-| ④ | `tzqual` | 同最强的一档 | 1x | | | | 量 texfast 的代价 |
-| ⑤ | `tzvauzi` | 同最强的一档 | 1x | | | | 量几何参数 |
-| ⑥ | ①–⑤ 里最好的 | | 0.75x | | | | 量缩放的收益 |
+| ① | `tzeden` | 未设（= `bandwidth`） | 1x | | | | v6.1 默认 |
+| ② | `tzeden` | `TU_AUTOTUNE_ALGO=profiled` | 1x | | | | 实测学习型 |
+| ③ | `tzeden` | `TU_DEBUG=sysmem` | 1x | | | | 等于 v6.0 旧行为，用来确认掉帧归因 |
+| ④ | `tzeden` | 同最强的一档 | 1x | | | | 再叠 `TU_Z_TEXMIP=1` 看画质/帧数交换比 |
+| ⑤ | `tzfast` | 同最强的一档 | 1x | | | | texfast 三件套全开 |
+| ⑥ | `tzvauzi` | 同最强的一档 | 1x | | | | 换一套外部 A722 寄存器表（几何相同） |
+| ⑦ | ①–⑥ 里最好的 | | **1x → 0.75x** | | | | **最后**才动分辨率，量缩放的收益 |
 
-> **为什么 `tzeden` 不能配 `gmem`**：`tzeden` 的 FD722 条目是 `num_ccu=1 / tile_align_h=16 / highest_bank_bit=15`，这套值只在强制 sysmem 下验证过，此时几何参数近乎不起作用。仓库 57 号补丁的注释原文写着：一旦 autotune 把渲染放进 GMEM，这套 1/16/15 会「produced UBWC corruption (purple/black lines) and a GPU hang」。而 `tzvauzi` 用的是 2/32/16，正是 T30 那套在 GMEM 下验证过的组合。
+> **关于 GMEM 与出问题怎么退**：v6.1 的 FD722 几何是 `num_ccu=2 / tile_align_h=32 / highest_bank_bit=16`，与 T30 一致，所以 autotune 选 GMEM 是**预期行为**，不用刻意避开。v6.0 的 1/16/15 只验证过强制 sysmem 的情况，autotune 一旦走 GMEM 会「produced UBWC corruption (purple/black lines) and a GPU hang」（57 号注释原文）——这也是 v6.1 改几何的直接原因。
+>
+> 万一还是出紫黑横条/横向条带：加 `TU_DEBUG=sysmem` 立刻绕开 GMEM，先保住可用性，再回来改几何。
 
 **测法**：进游戏先跑 3 分钟让机身热稳定（有风扇也要等），然后固定一段路线跑 2 分钟，取中位数而不是峰值。同一款游戏、同一存档点、同一段路线。
 
-**先测什么**：`tzeden` + 三档 `TU_DEBUG`（① ② ③）——这一组信息量最大，半小时能出结论。几何参数（⑤）放最后，因为它有花屏风险。
+**先测什么**：`tzeden` 的 ①②③ 三档显存模式——这一组信息量最大，半小时能出结论，而且全是改环境变量，不用重编。几何参数（⑥）放最后，因为它有花屏风险。
 
 ---
 
@@ -151,9 +175,11 @@ adb logcat -c
 adb logcat | grep -iE "default env|Adreno \(TM\) 722|vulkan.*driver"
 ```
 
-- 看到 `default env: TU_Z_TEXFAST=1` 之类 → 内置默认值生效了，说明我们这版驱动确实被选中。
+- 看到 `default env: TU_AUTOTUNE_ALGO=bandwidth` / `default env: TU_Z_TEXFAST=1` 之类 → 内置默认值生效了，说明我们这版驱动确实被选中。
 - 只看到 `Adreno (TM) 722` 但没有 `default env` → 加载的是系统驱动或别的构建，装错位置了。
 - Eden 图形设置里显示的驱动名应为 `Turnip Duo TZ`。
+
+> 想看得更细，可以加 `TU_DEBUG=startup`，日志里会打出 autotune 每个 render pass 选了 GMEM 还是 SYSMEM、以及理由（`early` 前缀的那些是 `prefer_*` 算法的提前返回）。这是判断"到底谁在强制 sysmem"最直接的办法。
 
 ---
 
@@ -165,7 +191,9 @@ adb logcat | grep -iE "default env|Adreno \(TM\) 722|vulkan.*driver"
 - 35–40fps 是别人的实测，你的机器、你的游戏、你的设置都不一样。
 - TurnipZ 那个"34→59.9 FPS"是 **A650 @1350p**，GPU 规模、GMEM、带宽全不同，搬过来必然落空。
 
-**能确定的是收益来源**：纹理取数（mip 取最近最多省一半采样）、交换链格式转换（每帧一次全屏读写）、显存往返（gmem/sysmem 选错就是白搬）、双屏扫描输出（约 9% 带宽）。
+**能确定的是收益来源**：交换链格式转换（每帧一次全屏读写）、显存模式选对（gmem/sysmem 选错就是白搬双倍带宽）、双屏扫描输出（约 9% 带宽）、纹理取数（只有在确认带宽卡死时才值得用 `TU_Z_TEXMIP=1` 去换）。
+
+**荒野之息要单独说一句**：它的 Switch 版**没有任何抗锯齿**，手持原生 720p，拉到 1080p 屏上几何边缘必然是硬的。这不是驱动能修的，也不是 v6.0 那个 texfast 造成的（texfast 只会让纹理更糟，不会让几何边缘更糟）。真要压边缘，只能提高 Eden 分辨率做超采样，代价是填充率。
 
 **不能确定的是幅度**，那必须靠第 4 节那张表填出来。
 
