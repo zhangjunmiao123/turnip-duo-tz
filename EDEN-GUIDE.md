@@ -48,13 +48,9 @@
 
 | 包 | 定位 | 什么时候用 |
 |---|---|---|
-| **`tz5`** | **主力（v6.2 帧率优先）** | 日常玩 Eden 用它。逐项对齐 v5.1（a730 magic regs、UBWC hint 开、LPAC 开、1/16/15 几何、强制 sysmem），再去掉 v6.0 新增的 BGRA/LRZ，只留 texfast 省带宽档（TEXMIP=1 + LODBIAS=45） |
-| **`tz5s`** | 对照（v6.2） | 与 tz5 唯一差别：保留 BGRA swap + LRZ rescue。tz5s 更慢 → 这两项就是 v6.0/v6.1 减速的来源；持平或更快 → 可当日常包 |
-| `tzeden` | v6.1 复位版（已被 v6.2 取代） | 默认画质等同上游、autotune 走 BANDWIDTH；实测比 v5.1 慢，留作存档 |
-| `tzfast` | v6.1 帧数对照 | texfast 三件套全开 + GMEM 放开；实测比 v5.1 慢 |
-| `tzqual` | 补丁对照 | 不带 texfast 补丁，用于严格验证补丁本身有没有额外开销 |
-| `tzvauzi` | 寄存器表对照 | 外部逆向的完整 A722 条目（几何 2/32/16）；配 `TU_Z_FORCE_GMEM=1` 才有意义 |
-| `tzsys` | 兜底 | Eden 里设不了环境变量、又必须强制 sysmem 时用 |
+| **`base`** | **主力（v6.3 = v5.1 精确等效）** | 日常玩 Eden 用它。v6.3 把 base 逐字节恢复成上游 v5.1（同补丁集、同构建脚本、同 Mesa commit），预期帧率与 v5.1 一致 |
+| **`tz6f`** | 实验（v6.3） | `base` + texfast 省带宽档（TEXMIP=1 + LODBIAS=45），v5.1 之上唯一增量。比 base 快就转正 |
+| `tzeden` / `tzfast` / `tz5` / `tz5s` 等 | 已归档（v6.0–v6.2） | 实测均比 v5.1 慢，移入 `variants-archive/`，不再构建；要用哪个手动移回 `patches/variants/` |
 
 ### v6.1 相对 v6.0 改了什么（荒野之息实测反馈后）
 
