@@ -8,11 +8,11 @@ on:
       version:
         description: '版本号，只用于 zip 名和 meta.json（例：6.1）'
         type: string
-        default: '6.4'
+        default: '6.5'
       variants:
         description: '要构建的变体，空格分隔；all = base + patches/variants 下全部'
         type: string
-        default: 'base'
+        default: 'base tzl60 tzl75 tzprof'
       mesa_ref:
         description: 'Mesa 分支/标签/提交（默认 v5.1 用的那个提交）'
         type: string
