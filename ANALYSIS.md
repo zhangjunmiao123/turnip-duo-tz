@@ -296,3 +296,51 @@ props->maxComputeSharedMemorySize = pdevice->info->cs_shared_mem_size;
 它只是报给应用的 workgroup shared memory 上限，**不参与 GMEM 预算**。A6xx 时代是 32 KiB，A7xx 硬件支持到 64 KiB，FD722 条目沿用了 32 KiB。Eden 的 ASTC/BCn 解码走 compute，理论上受益。
 
 但因为"只抬高一个查询上限、实际是否变大 workgroup 取决于 Eden 自己的启发式"，收益极可能为零。所以放在 `patches-optional/62-cs-shared-64k.py`，**不进默认变体**，避免污染主实验。已验证：只改 FD722 一处，其余 32 个设备块不动，幂等。
+
+---
+
+## 附录四：首次云端构建的实测结果（run #1，`variants=tzeden`）
+
+### 一、构建是真的
+
+| 项 | 实测 |
+|---|---|
+| 总时长 | 3 分 14 秒（Build 步 2 分 12 秒） |
+| ninja 进度行 | 902 行 |
+| 产出 `.so` | **12.88 MB**（v5.1 正品 12.89 MB） |
+| Mesa | 27.0.0-devel，Vulkan 1.4.363，commit 2026-10-21 |
+| 驱动包 | `Turnip-Duo-TZ-v6.0-tzeden.zip` 2.6 MB |
+
+> 一开始我按“3 分钟不可能编完”判定为失败，这是错的。这台 runner 从 dl.google.com 拿 1.5 GB NDK 只要十几秒，且只编译 Turnip 一个目标（不含 gallium/llvmpipe），两分钟出头是真实可行的。**教训：不要用时长推断成败，看产物体积和 ninja 行数。**
+
+### 二、补丁表：14 applied + 1 no-change
+
+`no-change` 的是 `57-fd722-duo.py`，**这是设计行为，不是失效**。它是个"断言守卫"：`EXPECT=(1,16)`、`ENFORCE=False`，当 56 已经把四个值写对时它一个字都不改，然后把实测值打印出来：
+
+```
+57-fd722-duo.py: upstream FD722 num_ccu=1 tile_align_h=16 highest_bank_bit=15 cs_shared_mem_size=32 * 1024
+57-fd722-duo.py: already applied
+```
+
+这行日志恰好是**最有价值的确认**——它证明最终固件里的 A722 几何就是 Duo 的已验证配置。
+
+### 三、默认环境注入成功
+
+```
+20-default-env.py: default TU_Z_TEXFAST=1
+20-default-env.py: default TU_Z_LODBIAS=30
+20-default-env.py: default TU_Z_BGRA_SWAP=1
+20-default-env.py: default TU_Z_LRZ_RESCUE=1
+```
+
+### 四、二进制里少了 `TU_Z_MUTABLE` / `TU_Z_SYSMEM_ONLY`，不是回归
+
+扫产出的 `.so`，只找到 `TU_Z_TEXFAST` / `TU_Z_LODBIAS` / `TU_Z_BGRA_SWAP` / `TU_Z_LRZ_RESCUE` 四个开关；v5.1 里还有 `TU_Z_MUTABLE`、`TU_Z_SYSMEM_ONLY`。原因：v5.1 那两条是**环境变量门控**的实现，本仓库的 30 / 36 号补丁改成了**无条件生效**（36 号直接改 `tu_autotune` 的编译期 `DEFAULT = PREFER_SYSMEM`，源码里没有 getenv）。所以能力只会更强，不会更弱，只是不再需要设环境变量。副作用：**没法用环境变量关掉它们**。
+
+### 五、一条必须记住的安全约束
+
+57 号源码注释原文：`num_ccu` 与 `tile_align_h` 只在渲染进 GMEM 时才真正起作用；1/16/15 这套值只在强制 sysmem 下验证过，一旦 autotune 走 GMEM，会 `produced UBWC corruption (purple/black lines) and a GPU hang`。
+
+本仓库 36 号补丁把 autotune 默认钉成 `PREFER_SYSMEM`，所以**默认配置是自洽安全的**。但一旦在 Eden 里手动设 `TU_DEBUG=gmem`，就绕开了这层保护，正好踩进那个坑。
+
+**结论：`gmem` 只能配 2/32/16 的 `tzvauzi`，不能配 1/16/15 的 `tzeden` / `tzqual` / `tzsys`。** 这条已同步修正 `START-HERE.md` 与 `EDEN-GUIDE.md`。
